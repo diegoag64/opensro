@@ -12,6 +12,7 @@ session's release outdated, which the page shows as the update notice.
 */
 import { HUNTING_GUIDE_BYTES_LIMIT } from "@/engine/contracts/hunting-guide";
 import { readBytes } from "@/engine/foundation/assets/read-bytes";
+import { decodeReverseMapPoints } from "@/engine/foundation/gameplay/reverse-return-map";
 import {
 	RELEASE_OUTDATED_STATUS,
 	REFERENCES_CONTRACT,
@@ -167,6 +168,7 @@ async function loadWorldReferences(
 	refObjSnapshot: unknown[];
 	itemCommandReferences?: unknown[];
 	huntingGuide?: import("@/engine/contracts/hunting-guide").HuntingGuideSource;
+	reverseMapPoints?: unknown[];
 }> {
 	const ref = value as { path?: unknown; sha256?: unknown; bytes?: unknown; huntingGuide?: unknown; };
 	if (
@@ -198,12 +200,15 @@ async function loadWorldReferences(
 		refItemSnapshot?: unknown;
 		refObjSnapshot?: unknown;
 		itemCommandReferences?: unknown;
+		// Port-only: present only when the server's SRO_REVERSE_RETURN_MAP is on.
+		reverseMapPoints?: unknown;
 	};
 	if (
 		!parsed ||
 		Object.keys( parsed ).some( key =>
 			key !== "referencesVersion" && key !== "skillLifecycleVersion" && key !== "refSkillSnapshot" &&
-			key !== "refItemSnapshot" && key !== "refObjSnapshot" && key !== "itemCommandReferences"
+			key !== "refItemSnapshot" && key !== "refObjSnapshot" && key !== "itemCommandReferences" &&
+			key !== "reverseMapPoints"
 		) ||
 		!Array.isArray( parsed.refSkillSnapshot ) || parsed.refSkillSnapshot.length > REFERENCE_ROWS_LIMIT
 	) throw Error( "Invalid world references" );
@@ -226,6 +231,7 @@ async function loadWorldReferences(
 		(!Array.isArray( parsed.itemCommandReferences ) || parsed.itemCommandReferences.length > REFERENCE_ROWS_LIMIT)
 	) throw Error( "Invalid item command references" );
 	const guide = huntingGuideSource( ref.huntingGuide, base );
+	const reverseMapPoints = decodeReverseMapPoints( parsed.reverseMapPoints );
 	return {
 		...(guide ? { huntingGuide: guide } : {}),
 		refSkillSnapshot: parsed.refSkillSnapshot,
@@ -233,7 +239,8 @@ async function loadWorldReferences(
 		refObjSnapshot: parsed.refObjSnapshot,
 		...(parsed.itemCommandReferences === undefined ?
 			{} :
-			{ itemCommandReferences: parsed.itemCommandReferences as unknown[] })
+			{ itemCommandReferences: parsed.itemCommandReferences as unknown[] }),
+		...(reverseMapPoints.length ? { reverseMapPoints: [ ...reverseMapPoints ] } : {})
 	};
 }
 

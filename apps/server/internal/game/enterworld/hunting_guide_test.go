@@ -50,3 +50,30 @@ func TestHuntingGuideReferenceIsSeparateAndImmutable(t *testing.T) {
 		t.Fatalf("conditional atlas request = %d", recorder.Code)
 	}
 }
+
+/*
+================
+TestHuntingGuideCoexistsWithReverseMapReferences
+================
+*/
+func TestHuntingGuideCoexistsWithReverseMapReferences(t *testing.T) {
+	refs, err := NewBrowserReferences(BrowserReferenceSources{Skills: oneSkillCatalogue{},
+		ReverseMapPoints: []ReverseMapPoint{{ID: 1, Name: "Jangan", RegionID: 25000, X: 900, Z: 900}},
+		HuntingGuide: []monster.HuntingGuideEntry{{RefObjID: 1933, Name: "Mangyang", Level: 1,
+			Points: []monster.HuntingGuidePoint{{RegionID: 25000, X: 100, Z: 200}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{refs.Path, refs.HuntingGuide.Path} {
+		recorder := httptest.NewRecorder()
+		refs.ServeHTTP(recorder, httptest.NewRequest("GET", path, nil))
+		expected := "Jangan"
+		if path == refs.HuntingGuide.Path {
+			expected = "Mangyang"
+		}
+		if recorder.Code != 200 || !strings.Contains(recorder.Body.String(), expected) {
+			t.Fatalf("coexisting reference %s lost %s: status %d", path, expected, recorder.Code)
+		}
+	}
+}

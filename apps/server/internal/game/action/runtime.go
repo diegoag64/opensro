@@ -151,6 +151,9 @@ type Runtime struct {
 	// another runtime or bootstrap's object list.
 	NpcRoster []simulation.NpcDef
 	portals   *portalCatalog
+	// reverseMapPoints is the reverse return scroll's map table, empty
+	// unless SRO_REVERSE_RETURN_MAP is on (ConfigureReverseReturnMap).
+	reverseMapPoints []enterworld.ReverseMapPoint
 	// gatePulleys maps a gate pulley's RefObjID to its gate's event zone
 	// (ConfigurePortals, fortress_gates.go).
 	gatePulleys map[uint32]uint32
@@ -280,6 +283,11 @@ type Runtime struct {
 	// 0 or 1 is native; the closed-beta growth switch raises it.
 	RareRate int
 
+	// PetExpPace is the closed-beta growth multiplier for an attack pet's
+	// EXP gain, read at the owner's level (progression GrowthRates.ExpPace,
+	// petgrowth.go). Nil is native; the growth switch sets it (port-only).
+	PetExpPace func(ownerLevel int64) float64
+
 	// PartyShareFloor raises every party member's EXP share to at least an
 	// even split (partyRewardFactors). Off is native; the closed-beta growth
 	// switch turns it on.
@@ -397,6 +405,14 @@ type Runtime struct {
 	// burst after the authority door closes. Pending pickups use captured
 	// delivery when configured; detached runtimes retain this actor fallback.
 	PushCharacterFrames func(divisionID, characterName string, frames []wire.Frame)
+	// SilkWallet credits operator and GM silk grants (operator_silk.go);
+	// RecordSilkGrant journals each committed grant.
+	SilkWallet      SilkWallet
+	RecordSilkGrant func(SilkGrant)
+	// RecordUniqueKill queues each announced unique kill for the community
+	// site's record (port-only). It runs inside the character door, so it
+	// must only enqueue: the store write happens on its own goroutine.
+	RecordUniqueKill func(division string, kill domain.UniqueKill)
 
 	// CaptureCharacterFrames snapshots recipient sessions and their scene
 	// revisions under the division lock, after the character door closes.

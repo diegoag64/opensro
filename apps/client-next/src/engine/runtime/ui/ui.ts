@@ -476,6 +476,8 @@ import {
 	worldMapPageAt,
 	worldMapPages,
 	worldMapPresentation,
+	worldMapPointMarkers,
+	REVERSE_MAP_MARKER,
 	type MapMarker,
 	mapLabelVisible
 } from "@/engine/foundation/ui/world-map";
@@ -532,6 +534,7 @@ import {
 	partyProposalAssets,
 	partyProposalLayout,
 	guildProposalLayout,
+	reverseReturnLayout,
 	proposalLayout,
 	MESSAGE_FRAME,
 	MESSAGE_TILE,
@@ -1454,6 +1457,8 @@ export function createUi(
 		shopOpenRequest = null;
 		if ( next !== "Shop" ) repairHud.reset();
 		if ( next !== SKIN_PANEL ) skinHud.close();
+		// Port-only: leaving the map cancels the reverse return map choice.
+		if ( next !== "Map" && reverseScrollHud.mapping() ) reverseScrollHud.close();
 		if ( next !== FORTRESS_WAR_PANEL ) fortressWarHud.close();
 		if ( next !== FORTRESS_SCHEDULE_PANEL ) fortressScheduleHud.close();
 		if ( next !== FORTRESS_TAX_PANEL ) fortressTaxHud.close();
@@ -1759,6 +1764,41 @@ export function createUi(
 			}
 		}
 		commands( { kind: "gameplay", command } );
+	}
+	/*
+	================
+	lastWhisperPartner
+
+	The reply target CIFChat keeps at +0x494 (read by the R case of 680A30,
+	written by 6AC230 through 6AD6E0): the newest whisper partner in either
+	direction. An incoming whisper names its sender (752800, channel 2); a
+	sent one names its recipient (6AEBD0, '$' mode 2), as an outgoing line's
+	name does here. 6AC230 never stores this character's own name. The
+	field starts empty each session, so the replayed transcript is skipped.
+	Native stores a sent recipient on Enter; the port's outgoing line exists
+	once the server accepts it, so a refused whisper is not a reply target.
+	================
+	*/
+	function lastWhisperPartner( lines: readonly import("@/engine/contracts/gameplay").ChatLine[] ) {
+		const self = view?.session?.character;
+		for ( let i = lines.length - 1; i >= 0; i-- ) {
+			const line = lines[i]!;
+			if ( line.channel === 2 && !line.history && line.name && line.name !== self ) return line.name;
+		}
+		return "";
+	}
+	/*
+	================
+	reverseMapOffered
+
+	Port-only: the reverse return box offers the map whenever the server
+	published a table, which it does only with SRO_REVERSE_RETURN_MAP on. A
+	shard-wide deviation switches by its server flag alone (owner ruling
+	2026-10-11), so there is no browser opt-in.
+	================
+	*/
+	function reverseMapOffered() {
+		return (view?.gameplay?.reverseMapPoints?.length ?? 0) > 0;
 	}
 	/*
 	================
@@ -3559,6 +3599,26 @@ export function createUi(
 		} else if ( id === "reverse-scroll-cancel" ) {
 			reverseScrollHud.close();
 			dirty = true;
+		} else if ( id === "reverse-scroll-map" ) {
+			// Port-only: the box hands the scroll to the world map.
+			if ( reverseMapOffered() && reverseScrollHud.openMap( view ) ) setPanel( "Map" );
+			dirty = true;
+		} else if ( id.startsWith( "reverse-map-point:" ) ) {
+			const point = reverseScrollHud.mapping() ?
+				view.gameplay?.reverseMapPoints?.find( row =>
+					row.id === Number( id.slice( "reverse-map-point:".length ) )
+				) :
+				undefined;
+			if ( point ) {
+				mapTeleport.choose( {
+					regionId: point.regionId,
+					x: point.x,
+					z: point.z,
+					name: point.name,
+					reversePoint: point.id
+				} );
+			}
+			dirty = true;
 		} else if ( id.startsWith( "count-job:" ) ) {
 			// 6E2840: a package slot (kind 5) opens its package window.
 			compositeItemHud.open( Number( id.slice( "count-job:".length ) ) );
@@ -4348,7 +4408,9 @@ export function createUi(
 					dirty = true;
 				} else if (
 					event.kind === "activate" &&
-					[ "reverse-scroll:2", "reverse-scroll:3", "reverse-scroll-cancel" ].includes( event.id )
+					[ "reverse-scroll:2", "reverse-scroll:3", "reverse-scroll-map", "reverse-scroll-cancel" ].includes(
+						event.id
+					)
 				) {
 					activate( event.id );
 				}
@@ -4863,6 +4925,14 @@ export function createUi(
 				) {
 					mapTeleport.clear();
 					dirty = true;
+					if ( teleportTarget.reversePoint !== undefined ) {
+						const command = reverseScrollHud.choosePoint( teleportTarget.reversePoint, view );
+						if ( command ) {
+							sendGameplay( command );
+							setPanel( "" );
+						}
+						return;
+					}
 					if ( view?.session?.phase === "world" && view.gameplay?.eligibility?.gm ) {
 						sendGameplay( { kind: "gm-command", line: mapTeleport.command( teleportTarget ) } );
 					}
@@ -6131,7 +6201,14 @@ export function createUi(
 					event.ctrl && panel === "Storage" && view?.gameplay &&
 					(event.id.startsWith( "slot:" ) || event.id.startsWith( "storage-slot:" ))
 				) {
-					const move = storageQuickMove( event.id, view.gameplay );
+					const move = storageQuickMove(
+						event.id,
+						view.gameplay,
+						{
+							page: storagePanel.page( view.gameplay.storage?.capacity ?? 0 ),
+							autoStack: view.gameplay.storageAutoStack === true
+						}
+					);
 					if ( move ) sendGameplay( { kind: "storage-move", move } );
 					carriedItem = null;
 					inventorySlot = -1;
@@ -6245,7 +6322,14 @@ export function createUi(
 				if (
 					panel === "Storage" && (event.id.startsWith( "slot:" ) || event.id.startsWith( "storage-slot:" ))
 				) {
-					const move = storageQuickMove( event.id, view.gameplay );
+					const move = storageQuickMove(
+						event.id,
+						view.gameplay,
+						{
+							page: storagePanel.page( view.gameplay.storage?.capacity ?? 0 ),
+							autoStack: view.gameplay.storageAutoStack === true
+						}
+					);
 					if ( move ) sendGameplay( { kind: "storage-move", move } );
 					return;
 				}
@@ -6442,6 +6526,15 @@ export function createUi(
 					}
 					if ( binding === 8 ) {
 						activate( "berserk" );
+						return;
+					}
+					// UIIT_CTL_REPLY_TT (key slot 20, R by default; 67A760 maps it to
+					// command 0x52): 680A30 reads the reply target and, only when it
+					// is set, prefills it as the whisper list does (6AC0F0).
+					if ( binding === 20 ) {
+						const partner = lastWhisperPartner( view.gameplay?.chat?.lines ?? [] );
+						if ( partner ) beginWhisper( partner );
+						dirty = true;
 						return;
 					}
 					if ( binding === 12 ) {
@@ -9929,6 +10022,33 @@ export function createUi(
 						} );
 					}
 				}
+				// Port-only: the reverse return map points while the map holds a scroll.
+				if ( mapOpen && pose && reverseScrollHud.mapping() ) {
+					const clip: UiRect = [ mapLeft + 6, mapTop + 34, mapWidth - 12, mapHeight - 40 ];
+					for (
+						const { point, rect } of worldMapPointMarkers( {
+							page: mapPage,
+							clip,
+							pan: mapPan,
+							center: mapCenter ?? pose,
+							points: game?.reverseMapPoints ?? []
+						} )
+					) {
+						mapImages.push( {
+							rect,
+							texture: REVERSE_MAP_MARKER,
+							uv: [ 0, 0, 1, 1 ],
+							color: [ 1, 1, 1, 1 ],
+							clip
+						} );
+						mapHits.push( {
+							id: "reverse-map-point:" + point.id,
+							label: point.name,
+							rect,
+							kind: "button"
+						} );
+					}
+				}
 				if ( mapOpen ) {
 					paths.push(
 						...(mapGuide?.paths ?? []),
@@ -12531,7 +12651,9 @@ export function createUi(
 					null;
 				if ( reverseBox ) {
 					controls = [];
-					const admission = beginWindow(), box = guildProposalLayout( w, h );
+					// Port-only: the scroll's box grows a map row when it is offered.
+					const mapRow = reverseScrollHud.active() && reverseMapOffered();
+					const admission = beginWindow(), box = reverseReturnLayout( w, h, mapRow ? 3 : 2 );
 					blocks.push( full );
 					paths.push( ...partyProposalAssets() );
 					quads.push(
@@ -12560,6 +12682,15 @@ export function createUi(
 							hudCopy( key ),
 							box.frame[0] + 16,
 							box.frame[1] + 44 + index * 26,
+							box.frame[2] - 32
+						);
+					}
+					if ( mapRow ) {
+						button(
+							"reverse-scroll-map",
+							"Move to a location on the map.",
+							box.frame[0] + 16,
+							box.frame[1] + 44 + 2 * 26,
 							box.frame[2] - 32
 						);
 					}
@@ -13227,7 +13358,10 @@ export function createUi(
 						busy = !!game?.inventoryPending;
 					const top = ROOT + "interface/alchemy/alcm_window_2.png";
 					paths.push( top );
-					if ( resources.has( top ) ) rect( [ px, py, 376, 172 ], white, top );
+					// 620180 sets alcm_window_2 (376x148) as the box's own texture and
+					// 53F4B0 stretches it over the window's authored extent (ginterface
+					// GDR_ALCHEMYBOX 376x152), which keeps the parchment under the PML.
+					if ( resources.has( top ) ) rect( [ px, py, root.rect[2], root.rect[3] ], white, top );
 					blocks.push( [ px, py, 376, 378 ] );
 					authoredText( frame.GDR_ALCHEMYBOX_TITLE!, px, py, hudCopy( "UIIT_CTL_ALCHEMYBOX" ) );
 					authoredButton( frame.GDR_ALCHEMYBOX_CLOSE!, px, py, "close", hudCopy( "UIIT_CTL_CLOSE" ), busy );
@@ -18447,11 +18581,20 @@ export function createUi(
 					)
 				);
 				const region = String( teleportShown.regionId ),
-					place = hud.data()?.zones[region] ?? "Region " + region;
+					place = teleportShown.name ?? hud.data()?.zones[region] ?? "Region " + region,
+					reverse = teleportShown.reversePoint !== undefined;
 				quads.push(
-					...text.quads( "Teleport", layout.title, full, white, { hAlign: 1 } ),
+					...text.quads(
+						reverse ? hudCopy( "UIIT_CTL_WNETWORK_REVERSE_PORTAL" ) : "Teleport",
+						layout.title,
+						full,
+						white,
+						{ hAlign: 1 }
+					),
 					...text.quads( place, layout.name, full, white, { hAlign: 1 } ),
-					...text.quads( "Teleport here?", layout.question, full, white, { hAlign: 1 } )
+					...text.quads( reverse ? "Move here?" : "Teleport here?", layout.question, full, white, {
+						hAlign: 1
+					} )
 				);
 				button(
 					"map-teleport-confirm",
@@ -20411,8 +20554,17 @@ export function createUi(
 							key && hudCopy( key ));
 				const hudData = hud.data();
 				let tooltip: readonly TooltipRow[] = value ? [ { value, color: 0xffffffff } ] : [];
+				// A press on the hovered control itself (a click, a Ctrl+click quick
+				// sell) keeps its tooltip, so it does not blink on every click
+				// (BUG-072). Native tooltips follow hover alone: A115C0 hit-tests the
+				// cursor each frame and A012C0 sends 0x4009 (show) / 0x400A (hide),
+				// with no button check. Hiding while a press that began on another
+				// control is held is older port behaviour, not native. A drag hides
+				// it through the carry.
+				const pressHides = pressed !== null && pressed !== hover;
 				if (
-					control && game && hudData && phase === "world" && !carriedShortcut && !carriedItem && !pressed &&
+					control && game && hudData && phase === "world" && !carriedShortcut && !carriedItem &&
+					!pressHides &&
 					!practice
 				) {
 					/*
@@ -20520,7 +20672,7 @@ export function createUi(
 					}
 				}
 				if (
-					control && tooltip.length && phase === "world" && !carriedShortcut && !carriedItem && !pressed &&
+					control && tooltip.length && phase === "world" && !carriedShortcut && !carriedItem && !pressHides &&
 					!practice
 				) {
 					const bubble = tooltipBubble(

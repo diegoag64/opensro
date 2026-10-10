@@ -3357,6 +3357,51 @@ test("a pending item move keeps inventory slots enabled and drops further moves"
 	}
 });
 
+test("pressing the hovered item keeps its tooltip; a press elsewhere hides it (BUG-072)", () => {
+	const f = uiFixture();
+	try {
+		const game = {
+			...f.state.gameplay,
+			inventory: [ {
+				slot: 14,
+				refObjId: 1,
+				typeFlags: 0x6c,
+				quantity: 10,
+				name: "Tooltip Stack",
+				magic: [],
+				tooltip: { fields: {} }
+			} ],
+			inventorySlotCount: 45,
+			equipmentSlotCount: 13,
+			inventoryPending: false
+		};
+		const state = { ...f.state, gameplay: game };
+		let now = 0;
+		const step = () => f.ui.step( state, ++now );
+		// The tooltip title may use the plain or the emphasized face.
+		const shown = () => [ 0, 2 ].some( style => f.hasText( "Tooltip Stack", "0", style ) );
+		step();
+		f.ui.event( { kind: "activate", id: "open-window:Inventory" } );
+		step();
+		f.ui.event( { kind: "hover", id: "slot:14" } );
+		step();
+		assert.ok( shown(), "hover shows the item tooltip" );
+		// A click (press then release) on the same slot, as a Ctrl+click sell.
+		f.ui.event( { kind: "press", id: "slot:14" } );
+		step();
+		assert.ok( shown(), "pressing the hovered slot keeps its tooltip" );
+		f.ui.event( { kind: "press", id: null } );
+		step();
+		assert.ok( shown() );
+		// A press held on another control still hides it.
+		f.ui.event( { kind: "press", id: "open-window:Inventory" } );
+		step();
+		assert.equal( shown(), false, "a press elsewhere hides the tooltip" );
+	} finally {
+		f.dispose();
+	}
+});
+
 test("an edit normalized back to the published value still republishes the field", () => {
 	// 521A85: the edit replaces an oversized draft with its limit. When that
 	// limit is already the field's value the semantics compare equal; the UI
@@ -3933,6 +3978,56 @@ test("the pet portrait selects and targets on right release only, as CIFCOSStatu
 	}
 });
 
+test("R replies to the last whisper partner (UIIT_CTL_REPLY_TT, BUG-075)", () => {
+	const f = uiFixture();
+	try {
+		let now = 0;
+		const press = () => {
+			f.ui.event( { kind: "key", code: "KeyR" } );
+			return f.ui.step( f.state, ++now );
+		};
+		f.state.session = { phase: "world", revision: 1, character: "Player" };
+		f.ui.step( f.state, now );
+		// No whisper yet: nothing to answer.
+		assert.equal( press()?.focusRequest?.id === "chat-text" && f.hasText( "$" ), false );
+		const whisper = ( name, outgoing, history = false ) => ({ channel: 2, name, text: "x", outgoing, history });
+		f.state.gameplay.chat = {
+			lines: [
+				whisper( "Alice", false ),
+				whisper( "Old", false, true ),
+				whisper( "Carol", false ),
+				// A whisper sent to Bob makes Bob the reply target (6AEBD0).
+				whisper( "Bob", true ),
+				{ channel: 1, name: "Dave", text: "public", outgoing: false }
+			]
+		};
+		assert.equal( press()?.focusRequest?.id, "chat-text" );
+		assert.ok( f.hasText( "$Bob" ), "the draft names the newest whisper partner, sent or received" );
+		assert.equal( f.hasText( "$Carol" ) || f.hasText( "$Old" ) || f.hasText( "$Dave" ), false );
+	} finally {
+		f.dispose();
+	}
+	// 6AC230 never stores this character's own name, nor is the replayed
+	// transcript a partner of this session: Bob stays the target.
+	const g = uiFixture();
+	try {
+		g.state.session = { phase: "world", revision: 1, character: "Player" };
+		g.state.gameplay.chat = {
+			lines: [
+				{ channel: 2, name: "Bob", text: "x", outgoing: true },
+				{ channel: 2, name: "Player", text: "x", outgoing: false },
+				{ channel: 2, name: "Eve", text: "x", outgoing: false, history: true }
+			]
+		};
+		g.ui.step( g.state, 0 );
+		g.ui.event( { kind: "key", code: "KeyR" } );
+		g.ui.step( g.state, 1 );
+		assert.ok( g.hasText( "$Bob" ) && !g.hasText( "$Player" ) && !g.hasText( "$Eve" ) );
+	} finally {
+		g.dispose();
+	}
+});
+
 test("GPU merchant menu branches retain all tabs, sparse pages and native purchase identities", () => {
 	const sent = [], f = uiFixture( c => sent.push( c.command ) );
 	try {
@@ -4195,6 +4290,36 @@ test("cold service windows cannot republish the companion inventory as their ret
 		held = false;
 		for ( let i = 35; i < 50; i++ ) semantics = f.ui.step( f.state, i * 100 ) ?? semantics;
 		assert.ok( semantics.controls.some( c => c.id === "window-drag:Alchemy" ) );
+	} finally {
+		f.dispose();
+	}
+});
+
+// 620180 gives the alchemy box alcm_window_2 (376x148) as its own texture and
+// 53F4B0 stretches it over the authored GDR_ALCHEMYBOX extent (376x152). At
+// the old 172 the scroll's dark rolled edge (image rows 82..90) slid under the
+// first line of the description, which then read as garbled text.
+test("the alchemy frame keeps its authored height, so the description sits on the parchment", () => {
+	const f = uiFixture();
+	try {
+		f.ui.step( f.state, 0 );
+		f.ui.event( { kind: "activate", id: "open-window:Alchemy" } );
+		for ( let i = 1; i < 20; i++ ) f.ui.step( f.state, i * 100 );
+		const quads = f.scenes.at( -1 ).quads;
+		const frame = quads.find( q => q.texture?.endsWith( "/alcm_window_2.png" ) );
+		assert.ok( frame, "the alchemy frame is drawn" );
+		assert.deepEqual( frame.rect.slice( 2 ), [ 376, 152 ] );
+		// The parchment spans image rows 92..138 of 148: 94.5..141.7 once stretched.
+		const parchmentTop = frame.rect[1] + 92 * 152 / 148;
+		const description = quads.filter( q =>
+			q.rect[1] >= frame.rect[1] + 90 && q.rect[1] < frame.rect[1] + 150 && q.rect[0] >= frame.rect[0] + 38 &&
+			q.texture?.includes( "font" )
+		);
+		assert.ok( description.length > 0, "the description glyphs are drawn" );
+		assert.ok(
+			description.every( q => q.rect[1] >= parchmentTop ),
+			"no description glyph starts on the rolled edge"
+		);
 	} finally {
 		f.dispose();
 	}

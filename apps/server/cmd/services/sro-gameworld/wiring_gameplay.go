@@ -116,6 +116,12 @@ func newGameplayPlane(
 	if err := items.ConfigurePortals(devPaths.TextdataDir); err != nil {
 		return nil, fmt.Errorf("portal catalogue: %w", err)
 	}
+	// Port-only, not native: the reverse return scroll's map destinations.
+	if action.ReverseReturnMapFromEnv() {
+		items.ConfigureReverseReturnMap(true)
+		log.Infof("reverse return: map destinations ON (%s), %d points", action.EnvReverseReturnMap,
+			len(items.ReverseReturnMapPoints()))
+	}
 	// One clock for the bootstrap and the tick sweep, read through the runtime
 	// so a swapped clock reaches both; world entry hands re-raised pet-skill
 	// windows to the same sweep that retires them.
@@ -483,6 +489,11 @@ func (game *gameplayPlane) register(hub *transport.Hub, loadQuests questDefiniti
 		return err
 	}
 	game.deps.MasteryTotalOverride = masteryOverride
+	// Port-only, not native: storage quick moves prefer a matching stack.
+	game.deps.StorageAutoStack = action.StorageAutoStackFromEnv()
+	if game.deps.StorageAutoStack {
+		log.Infof("storage: quick moves auto-stack ON (%s)", action.EnvStorageAutoStack)
+	}
 	stats := progression.NewRuntime(game.deps)
 	stats.MasteryTotalOverride = masteryOverride
 	if masteryOverride != 0 {
@@ -495,6 +506,9 @@ func (game *gameplayPlane) register(hub *transport.Hub, loadQuests questDefiniti
 		game.items.DropCap = stats.Growth.DropCap
 		game.items.GoldRate = stats.Growth.GoldRate
 		game.items.RareRate = stats.Growth.RareRate
+		// Attack pets grow at their owner's level pace (owner decision 2026-10-11).
+		growth, deps := stats.Growth, game.deps
+		game.items.PetExpPace = func(ownerLevel int64) float64 { return growth.ExpPace(deps.LevelData(), ownerLevel) }
 		game.items.PartyShareFloor = true
 	}
 	stats.Withdrawal = game.items.WithdrawalHooks()

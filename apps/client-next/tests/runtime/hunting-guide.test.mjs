@@ -211,3 +211,33 @@ test("optional atlas identity stays on the selected transport and cannot break l
 		undefined
 	);
 });
+
+test("world reference admission retains reverse destinations alongside the hunting identity", async t => {
+	const { createSessionHttp } = await import( "../../src/engine/runtime/simulation/worker/session/http/http.ts" );
+	const { REFERENCES_CONTRACT } = await import( "../../src/engine/foundation/release/protocol.ts" );
+	const point = { id: 1, name: "Jangan", regionId: 25000, x: 900, y: 0, z: 900 };
+	const bytes = new TextEncoder().encode(
+		JSON.stringify( {
+			referencesVersion: REFERENCES_CONTRACT,
+			skillLifecycleVersion: 1,
+			refSkillSnapshot: [],
+			refItemSnapshot: [],
+			refObjSnapshot: [],
+			reverseMapPoints: [ point ]
+		} )
+	);
+	const hash = Buffer.from( await crypto.subtle.digest( "SHA-256", bytes ) ).toString( "hex" );
+	const guideHash = "a".repeat( 64 ),
+		guide = { path: "/transport/references/" + guideHash + ".json", sha256: guideHash, bytes: 100 };
+	t.mock.method( globalThis, "fetch", async () => new Response( bytes ) );
+	const result = await createSessionHttp().references(
+		{ path: "/transport/references/" + hash + ".json", sha256: hash, bytes: bytes.length, huntingGuide: guide },
+		"https://example.invalid/shards/world",
+		new AbortController().signal
+	);
+	assert.deepEqual( result.reverseMapPoints, [ point ] );
+	assert.deepEqual( result.huntingGuide, {
+		url: "https://example.invalid/shards/world" + guide.path,
+		bytes: guide.bytes
+	} );
+});
