@@ -4688,9 +4688,7 @@ export function createUi(
 						// 5F1D60 opens 5D3EB0's named confirmation before sending.
 						const guild = view.gameplay?.social?.guild;
 						const member = guild?.members.find( m => m.id === entry.member );
-						const master = guild?.members.some( m =>
-							m.id === view?.gameplay?.social?.self && m.grade === 0
-						);
+						const master = guildSelf( view.gameplay?.social )?.grade === 0;
 						if ( member && member.grade !== 0 && master ) {
 							if ( !entry.confirmed ) {
 								const refusal = guildTransferRefusal( view.gameplay?.fortress, guild?.name ?? "" );
