@@ -14,6 +14,8 @@ The UI draws from this owner every frame.
 ===========================================================================
 */
 
+import type { GuildVote } from "@/engine/foundation/gameplay/social";
+
 // A guild name and a character name both fit twelve characters
 // (UIIT_MSG_GUILDERR_INVALID_GUILDNAME_LEN).
 const GUILD_FIELD_MAX_LENGTH = 12;
@@ -52,7 +54,7 @@ export function createGuildManagerHud() {
 	let transferOffset = 0;
 	let ask: GuildManagerAsk | null = null,
 		field: GuildManagerField | null = null,
-		vote: { readonly remainingMs: number; } | null = null;
+		vote: { readonly id: number; readonly remainingMs: number; } | null = null;
 	return {
 		/*
         ================
@@ -175,10 +177,24 @@ export function createGuildManagerHud() {
 		showVote
 		================
 		*/
-		showVote( remainingMs: number ) {
+		showVote( id: number, remainingMs: number ) {
 			ask = null;
 			field = null;
-			vote = { remainingMs };
+			vote = { id, remainingMs };
+		},
+		/*
+		================
+		observeVote
+
+		7603D0 type 5 refreshes the displayed time; type 3 closes the vote.
+		================
+		*/
+		observeVote( votes: readonly GuildVote[] ) {
+			if ( !vote ) return false;
+			const current = votes.find( row => row.id === vote?.id );
+			if ( current?.remainingMs === vote.remainingMs ) return false;
+			vote = current ? { id: current.id, remainingMs: current.remainingMs } : null;
+			return true;
 		},
 		/*
 		================

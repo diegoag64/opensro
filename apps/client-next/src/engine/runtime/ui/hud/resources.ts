@@ -141,6 +141,7 @@ export function createHudResources(
 		"ifguildlevelup",
 		"ifguildmasterleave",
 		"ifguildmasterleaveslot",
+		"ifguildmasterelection",
 		"ifguildpointup",
 		"ifguildpositiongrant",
 		"ifguildgrantpower",

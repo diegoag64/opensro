@@ -470,6 +470,25 @@ test(
 			assert.equal( await page.locator( '[data-ui-id="guild-manager-yes"]' ).isDisabled(), true );
 			const transferBefore = await page.evaluate( () => warFixture.commands.length );
 			await click( "guild-transfer-member:20" );
+			await page.evaluate( () => {
+				warFixture.state.gameplay.fortress = {
+					worldId: 0,
+					worlds: [],
+					fortresses: [],
+					registered: [],
+					listId: 0,
+					wars: [ { id: 1, name: "Red", flags: 1 } ]
+				};
+				warFixture.draw();
+			} );
+			await click( "guild-manager-yes" );
+			await draw( "guild-transfer-member:20" );
+			assert.equal( await page.evaluate( () => warFixture.commands.length ), transferBefore );
+			await page.screenshot( { path: "temp/artifacts/guild-war/manager-transfer-fortress-refusal.png" } );
+			await page.evaluate( () => {
+				warFixture.state.gameplay.fortress.wars[0].flags = 0;
+				warFixture.draw();
+			} );
 			await click( "guild-manager-yes" );
 			await draw( "guild-manager-no" );
 			assert.equal( await page.evaluate( () => warFixture.commands.length ), transferBefore );
@@ -490,6 +509,39 @@ test(
 				gid: 99,
 				id: 27
 			} );
+			await page.evaluate( () => {
+				warFixture.state.gameplay.social.guild.votes = [ { id: 88, kind: 0, remainingMs: 119999 } ];
+				warFixture.draw();
+			} );
+			await click( "npc-guild:vote" );
+			await draw( "guild-election-remaining" );
+			assert.equal( await page.locator( '[data-ui-id="guild-manager-yes"]' ).isDisabled(), true );
+			assert.match(
+				await page.locator( '[data-ui-id="guild-election-remaining"]' ).getAttribute( "aria-label" ) ?? "",
+				/^1\D/
+			);
+			const electionBefore = await page.evaluate( () => warFixture.commands.length );
+			await page.keyboard.press( "Enter" );
+			await draw( "guild-election-remaining" );
+			assert.equal( await page.evaluate( () => warFixture.commands.length ), electionBefore );
+			await page.screenshot( { path: "temp/artifacts/guild-war/manager-election.png" } );
+			await page.evaluate( () => {
+				warFixture.state.gameplay.social.guild.votes[0].remainingMs = 59999;
+				warFixture.draw();
+			} );
+			assert.match(
+				await page.locator( '[data-ui-id="guild-election-remaining"]' ).getAttribute( "aria-label" ) ?? "",
+				/^0\D/
+			);
+			await click( "guild-manager-no" );
+			await click( "npc-guild:vote" );
+			await draw( "guild-election-remaining" );
+			await page.evaluate( () => {
+				warFixture.state.gameplay.social.guild.votes = [];
+				warFixture.draw();
+			} );
+			assert.equal( await page.locator( '[data-ui-id="guild-election-remaining"]' ).count(), 0 );
+			assert.equal( await page.evaluate( () => warFixture.commands.length ), electionBefore );
 			await page.evaluate( () => {
 				warFixture.state.gameplay.social.guild = null;
 				warFixture.draw();

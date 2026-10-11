@@ -66,6 +66,8 @@ export function nativeWindowSections( name: string ): readonly string[] | undefi
 			return [ "Create", "AllianceInfo", "GuildDetail", "AllianceList", "CommandButton" ];
 		case "ifguild":
 			return [ "Create", "GuildInfo", "NotifySubBox", "MemberView", "Command", "SortBtn" ]; // 5EA9D0.
+		case "ifguildmasterelection":
+			return [ "Create", "ListWnd" ]; // 5F0940.
 		case "ifpartymatch":
 			// 637400 creates the background before the inset search controls.
 			return [ "Create", "SearchInfo", "SlotListButton", "SlotList" ];

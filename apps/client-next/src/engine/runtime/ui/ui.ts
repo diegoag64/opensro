@@ -253,6 +253,7 @@ import {
 import {
 	guildLevelUpPrice,
 	guildManagerRows,
+	guildTransferRefusal,
 	guildSoldierRows,
 	guildSoldierPrompt,
 	MASTER_RELEASE_VOTE
@@ -2555,7 +2556,7 @@ export function createUi(
 			else if ( row === "compensation" ) sendGameplay( { kind: "guild-compensation", gid: npc } );
 			else if ( row === "vote" ) {
 				const vote = social?.guild?.votes?.find( v => v.kind === MASTER_RELEASE_VOTE );
-				if ( vote ) guildManagerHud.showVote( vote.remainingMs );
+				if ( vote ) guildManagerHud.showVote( vote.id, vote.remainingMs );
 			} else if ( row === "warehouse" ) {
 				if ( !canLeavePanel() ) return;
 				sendGameplay( { kind: "storage-open-guild", gid: npc } );
@@ -4660,7 +4661,8 @@ export function createUi(
 				) {
 					dirty = true;
 					if ( guildManagerHud.vote() ) {
-						guildManagerHud.reset();
+						// 5EFF00 leaves the election open until a candidate is selected.
+						// v1.150's decoded vote state supplies no candidate list.
 						return;
 					}
 					if ( view?.session?.phase !== "world" ) return;
@@ -4690,6 +4692,11 @@ export function createUi(
 						);
 						if ( member && member.grade !== 0 && master ) {
 							if ( !entry.confirmed ) {
+								const refusal = guildTransferRefusal( view.gameplay?.fortress, guild?.name ?? "" );
+								if ( refusal ) {
+									hudMessages.append( hudCopy( refusal ) );
+									return;
+								}
 								guildManagerHud.confirmTransfer();
 								return;
 							}
@@ -6672,6 +6679,7 @@ export function createUi(
 		================
 		*/
 		step( next: UiView, now = 0, probe?: UiFrameProbe ): UiSemantics | null {
+			if ( guildManagerHud.observeVote( next.gameplay?.social?.guild?.votes ?? [] ) ) dirty = true;
 			if ( reverseScrollHud.reconcile( next ) ) dirty = true;
 			quickslotTime = next.simulationTimeMs ?? now;
 			if (
@@ -18699,7 +18707,67 @@ export function createUi(
 				const transferPage = hud.data()?.windows.ifguildmasterleave,
 					transferSlot = hud.data()?.windows.ifguildmasterleaveslot;
 				const transferRoot = hud.data()?.root.GDR_GUILDMASTER_LEAVE;
-				if (
+				const electionPage = hud.data()?.windows.ifguildmasterelection,
+					electionRoot = hud.data()?.root.GDR_GUILDMASTER_ELECTION;
+				if ( guildVote && electionPage && electionRoot ) {
+					// 5F0940: Create then ListWnd, seven empty rows, Confirm initially
+					// disabled. Candidate type 2 asserts in v1.150; do not invent rows.
+					const x = Math.max( 0, (w - electionRoot.rect[2]) / 2 ),
+						y = Math.max( 0, (h - electionRoot.rect[3]) / 2 );
+					const at = ( id: number ) => Object.values( electionPage ).find( n => n.id === id )!;
+					controls = [];
+					blocks = [ full ];
+					authoredChrome(
+						{
+							...electionRoot,
+							type: "CIFFrame",
+							rect: [ 0, 0, electionRoot.rect[2], electionRoot.rect[3] ]
+						},
+						x,
+						y
+					);
+					nativePage( electionPage, x, y, [ 11, 12, 14, 22, 23, 24 ] );
+					for ( const id of [ 22, 23, 24 ] ) {
+						const node = at( id );
+						authoredImage( node, x, y );
+						authoredText( node, x, y, hudCopy( node.text ), true );
+					}
+					quads.push(
+						...text.quads(
+							hudCopy( "UIIT_CTL_MRELEASE_PROGRESSWINDOW" ),
+							[ x + 10, y + 12, electionRoot.rect[2] - 21, 12 ],
+							full,
+							white,
+							{ hAlign: 1, vAlign: 0 }
+						)
+					);
+					// 5F0130 formats integer milliseconds / 60000 with "%d%s".
+					const remaining = Math.floor( Math.max( 0, guildVote.remainingMs ) / 60000 ) +
+						hudCopy( "PARAM_MINUTE" );
+					authoredText( at( 14 ), x, y, remaining, true );
+					controls.push( {
+						id: "guild-election-remaining",
+						label: remaining,
+						rect: authoredRect( at( 14 ), x, y ),
+						kind: "region"
+					} );
+					const scroll = chatScrollbar(
+						"guild-election",
+						[ x + 239, y + 80, 16, 116 ],
+						0,
+						7,
+						0,
+						resources.size,
+						full,
+						hover,
+						pressed
+					);
+					paths.push( ...scroll.paths );
+					quads.push( ...scroll.quads );
+					controls.push( ...scroll.controls.map( c => ({ ...c, disabled: true }) ) );
+					authoredLabeledButton( at( 11 ), x, y, "guild-manager-yes", hudCopy( at( 11 ).text ), true );
+					authoredLabeledButton( at( 12 ), x, y, "guild-manager-no", hudCopy( at( 12 ).text ) );
+				} else if (
 					guildField?.kind === "master-leave" && !guildField.confirmed && transferPage && transferSlot &&
 					transferRoot
 				) {
