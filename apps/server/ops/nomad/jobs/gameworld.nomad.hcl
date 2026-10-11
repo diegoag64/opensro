@@ -182,6 +182,15 @@ variable "reverse_return_map" {
   default = ""
 }
 
+# alchemy_rates replaces each elixir's authored reinforcement chance with one
+# table by plus (port-only, not native; owner decision 2026-10-11): "on" is
+# +1 100% ... +11 5%, a comma list such as "100,80,70" is custom, "off" is
+# the original game. A malformed value stops GameWorld at boot.
+variable "alchemy_rates" {
+  type    = string
+  default = "on"
+}
+
 # beta_growth holds every level's EXP and skill EXP to the level-1 kill pace,
 # multiplies skill EXP by beta_skill_exp_rate on top, makes a kill's assigned
 # rewards and ordinary drop passes beta_drop_rate times over (the unique
@@ -203,6 +212,18 @@ variable "beta_skill_exp_rate" {
 variable "beta_drop_rate" {
   type    = string
   default = "20"
+}
+
+# beta_drop_mix gives item families their own beta drop rate (port-only, not
+# native; owner decision 2026-10-11). "on" keeps potions, cures, scrolls,
+# ammo, elixirs, stones and tablets at the native rate while equipment and a
+# monster's assigned rewards keep beta_drop_rate; "family=rate,..." tunes it
+# (families: equipment, assigned, potion, cure, scroll, elixir, ammo, stone,
+# tablet); "off" is the one uniform beta rate. A malformed value stops
+# GameWorld at boot.
+variable "beta_drop_mix" {
+  type    = string
+  default = "on"
 }
 
 variable "beta_drop_cap" {
@@ -390,6 +411,7 @@ job "sro-gameworld-__SHARD_ID__" {
         SRO_PARTY_MASTERIES                = var.party_masteries
         SRO_STORAGE_AUTO_STACK             = var.storage_auto_stack
         SRO_REVERSE_RETURN_MAP             = var.reverse_return_map
+        SRO_ALCHEMY_RATES                  = var.alchemy_rates
         SRO_BETA_GROWTH                    = var.beta_growth
         SRO_BETA_SKILL_EXP_RATE            = var.beta_skill_exp_rate
         SRO_BETA_DROP_RATE                 = var.beta_drop_rate
@@ -397,6 +419,7 @@ job "sro-gameworld-__SHARD_ID__" {
         SRO_INSTANT_INVENTORY_EXPANSION    = var.instant_inventory_expansion
         SRO_BETA_RARE_RATE                 = var.beta_rare_rate
         SRO_BETA_DROP_CAP                  = var.beta_drop_cap
+        SRO_BETA_DROP_MIX                  = var.beta_drop_mix
         SRO_STACK_SIZES                    = var.stack_sizes
         SRO_PUBLIC_API_ADDR                = var.public_api_addr
         SRO_PUBLIC_API_TOKEN_PATH          = "${NOMAD_SECRETS_DIR}/public-api-token"

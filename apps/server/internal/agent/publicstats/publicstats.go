@@ -4,8 +4,9 @@
 publicstats.go - the community site's read-only public API (port-only)
 
 Port-only, not native. GET-only JSON for opensro.online: the unique
-tracker, kill feed, leaderboard and world-firsts, the player database and
-the Original vs OpenSRO rules (opensro-web docs/COMMUNITY.md, P1-P6, P9).
+tracker, kill feed, leaderboard and world-firsts, the player database, the
+server status and event schedule (status.go) and the Original vs OpenSRO
+rules (opensro-web docs/COMMUNITY.md, P1-P9).
 It runs in the GameWorld, whose authority store holds the characters and
 kills, on its own loopback-only listener (SRO_PUBLIC_API_ADDR), apart from
 the control API.
@@ -40,6 +41,7 @@ import (
 
 	"opensro.online/server/internal/domain"
 	"opensro.online/server/internal/game/world/simulation"
+	"opensro.online/server/internal/transport"
 )
 
 // EnvAddr names the listener; DefaultAddr is its loopback default.
@@ -116,6 +118,18 @@ type Sources struct {
 	// either one missing leaves the write unserved.
 	SetHidden  func(accountID, name string, hidden bool) error
 	WriteToken string
+	// Sample reads the shard's online count and the hub's cumulative
+	// counters for P7 (status.go); nil leaves the status figures zero.
+	Sample func() (online int, metrics transport.Metrics)
+	// StartedAt is when the GameWorld started (P7 uptime).
+	StartedAt time.Time
+	// MasteryTotalOverride is the beta total mastery allowance, 0 when
+	// native (P7 status).
+	MasteryTotalOverride int
+	// ExpRequired is the level table's EXP to pass level (rankings).
+	ExpRequired func(level int64) (int64, bool)
+	// Schedule lists the events this server runs at now (P8).
+	Schedule func(now time.Time) []ScheduledEvent
 }
 
 /*
@@ -135,6 +149,8 @@ type snapshot struct {
 	kills       []domain.UniqueKill
 	killsUntil  time.Time
 	lastSeq     int64
+	// rankings are the orderings built from this roster and kill list.
+	rankings map[rankingKey]rankingSet
 }
 
 /*
@@ -161,6 +177,8 @@ type Service struct {
 	mu    sync.Mutex
 	cache map[string]cacheEntry
 	snap  snapshot
+
+	status statusState
 
 	server   *http.Server
 	listener net.Listener
@@ -203,7 +221,10 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("GET /public/v1/characters", s.cached(charactersMaxAge, s.search))
 	mux.HandleFunc("GET /public/v1/characters/{name}", s.cached(charactersMaxAge, s.profile))
 	mux.HandleFunc("GET /public/v1/rules", s.cached(rulesMaxAge, s.rules))
+	mux.HandleFunc("GET /public/v1/rankings", s.cached(charactersMaxAge, s.rankings))
 	mux.HandleFunc("GET /public/v1/schema", s.cached(rulesMaxAge, s.schema))
+	mux.HandleFunc("GET /public/v1/status", s.cached(uniquesMaxAge, s.serverStatus))
+	mux.HandleFunc("GET /public/v1/schedule", s.cached(boardsMaxAge, s.schedule))
 	s.installPrivacy(mux)
 	return mux
 }
@@ -226,23 +247,37 @@ repeating it) and stores it for maxAge. Errors are cached too, so a burst of
 */
 func (s *Service) cached(maxAge time.Duration, build func(r *http.Request) (any, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		key := r.URL.Path + "?" + r.URL.RawQuery
-		now := s.now()
-		s.mu.Lock()
-		entry, fresh := s.cache[key]
-		if !fresh || !now.Before(entry.until) {
-			entry = s.build(build, r, now.Add(maxAge))
-			if len(s.cache) > 4096 {
-				s.cache = map[string]cacheEntry{}
-			}
-			s.cache[key] = entry
-		}
-		s.mu.Unlock()
+		entry := s.cachedEntry(r, maxAge, build)
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "max-age="+strconv.Itoa(int(maxAge/time.Second)))
 		w.WriteHeader(entry.status)
 		_, _ = w.Write(entry.body)
 	}
+}
+
+/*
+================
+cachedEntry
+
+The fresh entry for the request, building it under s.mu. The lock is
+released by defer: a builder that panics must never leave every later
+request waiting on it.
+================
+*/
+func (s *Service) cachedEntry(r *http.Request, maxAge time.Duration, build func(r *http.Request) (any, error)) cacheEntry {
+	key := r.URL.Path + "?" + r.URL.RawQuery
+	now := s.now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, fresh := s.cache[key]
+	if !fresh || !now.Before(entry.until) {
+		entry = s.build(build, r, now.Add(maxAge))
+		if len(s.cache) > 4096 {
+			s.cache = map[string]cacheEntry{}
+		}
+		s.cache[key] = entry
+	}
+	return entry
 }
 
 /*
@@ -293,6 +328,7 @@ func (s *Service) Start(addr string) error {
 	s.listener = listener
 	s.server = &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = s.server.Serve(listener) }()
+	s.startStatusSampler()
 	return nil
 }
 
@@ -314,6 +350,7 @@ Close
 ================
 */
 func (s *Service) Close() error {
+	s.stopStatusSampler()
 	if s.server == nil {
 		return nil
 	}

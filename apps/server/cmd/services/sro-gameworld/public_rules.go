@@ -17,6 +17,7 @@ import (
 	"opensro.online/server/internal/game/action"
 	"opensro.online/server/internal/game/companion"
 	"opensro.online/server/internal/game/enterworld"
+	"opensro.online/server/internal/game/item/alchemy"
 	"opensro.online/server/internal/game/progression"
 	"opensro.online/server/internal/game/quest"
 	"opensro.online/server/internal/game/social/party"
@@ -34,12 +35,18 @@ so the list cannot change while the GameWorld runs.
 func publicRules() publicstats.RulesResponse {
 	silkRate, _ := action.BetaSilkFromEnv()
 	stackSizes, _ := enterworld.StackSizesFromEnv()
+	alchemyRates, _ := alchemy.ReinforceRatesFromEnv()
+	dropMix, _ := progression.BetaDropMixFromEnv()
 	return publicstats.RulesResponse{
 		Rules: []publicstats.Rule{
 			{Flag: progression.EnvBetaGrowth, On: progression.BetaGrowthFromEnv().Enabled,
 				Native: "Retail experience, skill point and drop rates.",
 				Now:    "Raised beta rates for experience, skill points and drops.",
 				Why:    "A beta lasts weeks, not years; testers need to reach the content."},
+			{Flag: progression.EnvBetaDropMix, On: progression.BetaGrowthFromEnv().Enabled && dropMix != nil,
+				Native: "Every kind of item drops at the retail rate.",
+				Now:    "Each item kind has its own beta drop rate; by default equipment keeps the raised rate while potions, pills, scrolls, arrows and alchemy materials drop at the retail rate.",
+				Why:    "So raised drops bring gear rather than a floor of potions."},
 			{Flag: action.EnvBetaSilk, On: silkRate > 0,
 				Native: "Silk is bought for the account.",
 				Now:    "Every full hour in the world earns silk, up to a cap.",
@@ -68,6 +75,10 @@ func publicRules() publicstats.RulesResponse {
 				Native: "Retail stack sizes.",
 				Now:    "Larger stacks for some item kinds.",
 				Why:    "Less bag management during testing."},
+			{Flag: alchemy.EnvReinforceRates, On: alchemyRates != nil,
+				Native: "Each elixir has its own success chance per plus, at least 10%.",
+				Now:    "One gentler table for every elixir: +1 always succeeds, falling to 5% for +11; powders, Luck and premium bonuses still add.",
+				Why:    "Players asked for it; the original rates return with one setting."},
 		},
 		Deviations: []publicstats.Deviation{
 			{Title: "Storage Ctrl+click",

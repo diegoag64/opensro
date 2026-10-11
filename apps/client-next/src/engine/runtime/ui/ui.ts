@@ -426,6 +426,7 @@ import { overheadLayout } from "@/engine/foundation/ui/overhead-layout";
 import { vitalWarning } from "@/engine/foundation/ui/vital-warning";
 import {
 	beginnerMarkShown,
+	boardText,
 	jobMark,
 	blindableCharacter,
 	hiddenSilkCos,
@@ -11539,8 +11540,9 @@ export function createUi(
 									continue;
 								}
 								authoredChrome( child, sx, sy );
+								// 5B93A0: "*%s" in a job party, "%s" otherwise.
 								if ( child.name === "GDR_PTYSLOT_STATIC_NAME" ) {
-									authoredText( child, sx, sy, member.name );
+									authoredText( child, sx, sy, (social?.jobParty ? "*" : "") + member.name );
 								}
 								if ( child.name === "GDR_PTYSLOT_PICTURE" ) {
 									memberPortrait( member.id, authoredRect( child, sx, sy ) );
@@ -11548,15 +11550,17 @@ export function createUi(
 								if ( child.name === "GDR_PTYSLOT_STATIC_LEVEL_DATA" ) {
 									authoredText( child, sx, sy, String( member.level ) );
 								}
-								// 5B93A0: the member's guild in white, or the grey no-guild text.
+								// 5B93A0: the member's guild in white, or the grey no-guild text
+								// (always, in a job party).
 								if ( child.name === "GDR_PTYSLOT_STATIC_GUILD" ) {
+									const guild = social?.jobParty ? "" : member.guild;
 									authoredText(
-										member.guild ?
+										guild ?
 											{ ...child, color: white } :
 											{ ...child, color: tooltipColor( 0xff999999 ) },
 										sx,
 										sy,
-										member.guild || hudCopy( "UIIT_STT_NO_GUILD" )
+										guild || hudCopy( "UIIT_STT_NO_GUILD" )
 									);
 								}
 								// 5B93A0 -> 81D5B0: the kindred mark of the member's own reference.
@@ -16457,9 +16461,11 @@ export function createUi(
 						}
 					}
 					if ( named && beginnerMarkShown( entity, options ) ) {
-						const name = entity.boardName ?? entity.name ??
-								(entity.gid === game?.localGid ? next.session?.character : "") ??
-								"",
+						const name = boardText(
+								entity,
+								entity.boardName ?? entity.name ??
+									(entity.gid === game?.localGid ? next.session?.character : "") ?? ""
+							),
 							width = text.run( name, selected ? 2 : 0 ).width,
 							height = text.boardHeight();
 						paths.push( path );
@@ -16476,8 +16482,11 @@ export function createUi(
 						}
 					}
 					if ( !named ) continue;
-					const name = entity.boardName ?? entity.name ??
-							(entity.gid === game?.localGid ? next.session?.character : "") ?? "",
+					const name = boardText(
+							entity,
+							entity.boardName ?? entity.name ??
+								(entity.gid === game?.localGid ? next.session?.character : "") ?? ""
+						),
 						width = text.run( name, selected ? 2 : 0 ).width,
 						height = text.boardHeight();
 					const left = -(width >> 1), top = -(height >> 1);

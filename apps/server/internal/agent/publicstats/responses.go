@@ -205,6 +205,86 @@ type Deviation struct {
 	Now    string `json:"now"`
 }
 
+// StatusTick is the last five minutes of simulation ticks: the median
+// and 99th percentile durations and the percent over the tick interval.
+type StatusTick struct {
+	P50Ms       float64 `json:"p50Ms"`
+	P99Ms       float64 `json:"p99Ms"`
+	SlowPercent float64 `json:"slowPercent"`
+}
+
+// StatusPoint is one closed hour: its peak online and tick p99.
+type StatusPoint struct {
+	At     string  `json:"at"`
+	Online int     `json:"online"`
+	P99Ms  float64 `json:"p99Ms"`
+}
+
+// StatusResponse is P7 GET /public/v1/status. History holds up to 48
+// hourly points, oldest first, since the GameWorld started.
+type StatusResponse struct {
+	Up            bool          `json:"up"`
+	Online        int           `json:"online"`
+	UptimeSeconds int64         `json:"uptimeSeconds"`
+	Tick          StatusTick    `json:"tick"`
+	History       []StatusPoint `json:"history"`
+	// MasteryTotalOverride is the shard's total mastery allowance when a
+	// beta setting replaces the native rule (CH 300, EU min(2 x level,
+	// 240)); omitted when native. It is the value the client receives.
+	MasteryTotalOverride int `json:"masteryTotalOverride,omitempty"`
+}
+
+// ScheduleEvent is one event the server runs. Kind is "fortress" (the
+// war), "fortress-registration" or "maintenance"; EndsAt is null for an
+// open-ended maintenance.
+type ScheduleEvent struct {
+	Kind     string  `json:"kind"`
+	Title    string  `json:"title"`
+	StartsAt string  `json:"startsAt"`
+	EndsAt   *string `json:"endsAt"`
+	Running  bool    `json:"running"`
+}
+
+// ScheduleResponse is P8 GET /public/v1/schedule.
+type ScheduleResponse struct {
+	ServerTime string          `json:"serverTime"`
+	Events     []ScheduleEvent `json:"events"`
+}
+
+// Gear is a ranked player's worn equipment plus: the sum and the highest.
+type Gear struct {
+	PlusTotal int `json:"plusTotal"`
+	BestPlus  int `json:"bestPlus"`
+}
+
+// RankingRow is one visible player in a ranking. ReachedAt is when the
+// player reached its level, recorded only at the milestone levels (20, 30
+// ... 90) and only since tracking began; otherwise null.
+type RankingRow struct {
+	Rank        int     `json:"rank"`
+	Name        string  `json:"name"`
+	Race        string  `json:"race"`
+	Gender      string  `json:"gender"`
+	Level       int64   `json:"level"`
+	ExpPercent  float64 `json:"expPercent"`
+	ReachedAt   *string `json:"reachedAt"`
+	Guild       string  `json:"guild,omitempty"`
+	Job         string  `json:"job,omitempty"`
+	UniqueKills int     `json:"uniqueKills"`
+	Gear        Gear    `json:"gear"`
+}
+
+// RankingsResponse is GET /public/v1/rankings: one page of 50.
+type RankingsResponse struct {
+	By          string       `json:"by"`
+	Race        *string      `json:"race"`
+	Page        int          `json:"page"`
+	Pages       int          `json:"pages"`
+	Total       int          `json:"total"`
+	GeneratedAt string       `json:"generatedAt"`
+	Rows        []RankingRow `json:"rows"`
+}
+
 // RulesResponse is P9 GET /public/v1/rules.
 type RulesResponse struct {
 	Rules      []Rule      `json:"rules"`
