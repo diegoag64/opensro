@@ -236,6 +236,7 @@ import {
 	FORTRESS_WAR_APPLY_SLOT_WIDTH
 } from "@/engine/foundation/ui/fortress-war-apply";
 import { createGuildManagerHud } from "./hud/guild-manager-hud";
+import { createGuildNoticeHud } from "./hud/guild-notice-hud";
 import { createMagicOptionHud, MAGIC_OPTION_LIST_ROWS } from "./hud/magic-option-hud";
 import {
 	premiumCommand,
@@ -446,7 +447,7 @@ import {
 	type AutoPotionDraft
 } from "@/engine/foundation/gameplay/auto-potion";
 import { selectChatTab, composeChat, chatTabPrefix, chatFeedbackText } from "@/engine/foundation/ui/chat-presentation";
-import { textBoardLines, textLines } from "@/engine/foundation/ui/text-lines";
+import { textBoardLines, textBoxLines, textLines } from "@/engine/foundation/ui/text-lines";
 import { createSpeech } from "./hud/speech";
 import { createMessageScroll } from "./hud/scroll";
 import { createHudMessages } from "./hud/messages";
@@ -861,6 +862,7 @@ export function createUi(
 	const grantPowerHud = createGrantPowerHud();
 	const compositeItemHud = createCompositeItemHud();
 	const guildManagerHud = createGuildManagerHud();
+	const guildNoticeHud = createGuildNoticeHud();
 	const magicOptionHud = createMagicOptionHud();
 	const slotEffects = createSlotEffectClock();
 	const spGauge = createSkillGauge();
@@ -1465,6 +1467,7 @@ export function createUi(
 		blockOffset = 0;
 		if ( shopDialog || shopWarning ) closeShopDialog();
 		guildDialog = "";
+		guildNoticeHud.close();
 		practice = null;
 		// 69CDF0 owns QuestInfo independently. 589660 hides main-popup pages,
 		// including Quests, without closing that details window or its prompt.
@@ -4096,6 +4099,7 @@ export function createUi(
 			const tab = Number( id.slice( 10 ) );
 			if ( tab === 4 ) setPanel( "Blocking" );
 			else if ( tab !== guildTab ) {
+				guildNoticeHud.close();
 				guildTab = tab;
 				socialMember = 0;
 				socialPage = 0;
@@ -4108,7 +4112,16 @@ export function createUi(
 				socialSubject = "";
 				socialContents = "";
 			}
+		} else if ( id === "guild-notice-read" ) {
+			if ( view.gameplay?.social?.guild?.contents ) {
+				grantPowerHud.close();
+				guildNoticeHud.open();
+			}
+		} else if ( id === "guild-notice-close" ) guildNoticeHud.close();
+		else if ( id === "guild-notice-scroll-up" || id === "guild-notice-scroll-down" ) {
+			guildNoticeHud.scroll( id.endsWith( "-up" ) ? -1 : 1 );
 		} else if ( id === "guild-dialog:authority" ) {
+			guildNoticeHud.close();
 			const guild = view.gameplay?.social?.guild;
 			if ( guild ) grantPowerHud.open( guild.members );
 		} else if ( id.startsWith( "guild-grant:" ) ) {
@@ -4615,6 +4628,32 @@ export function createUi(
 					dirty = true;
 					return;
 				}
+				if ( guildManagerHud.field()?.kind === "master-leave" && !guildManagerHud.field()?.confirmed ) {
+					const members = view?.gameplay?.social?.guild?.members.filter( m => m.grade !== 0 ) ?? [];
+					if ( event.kind === "activate" && event.id.startsWith( "guild-transfer-member:" ) ) {
+						const member = members.find( m => m.id === Number( event.id.slice( 22 ) ) );
+						if ( member ) guildManagerHud.selectTransfer( member.id, member.name );
+						dirty = true;
+						return;
+					}
+					if (
+						event.kind === "scroll" ||
+						event.kind === "activate" &&
+							[ "guild-transfer-up", "guild-transfer-down" ].includes( event.id ) ||
+						event.kind === "drag" && event.id === "guild-transfer-thumb"
+					) {
+						const delta = event.kind === "scroll" ?
+							Math.sign( event.delta ) :
+							event.kind === "drag" ?
+							event.dy * Math.max( 0, members.length - 7 ) / 116 :
+							event.id.endsWith( "-up" ) ?
+							-1 :
+							1;
+						guildManagerHud.transferPosition( members.length, delta );
+						dirty = true;
+						return;
+					}
+				}
 				if (
 					event.kind === "key" && event.code === "Enter" && !composing ||
 					event.kind === "activate" && event.id === "guild-manager-yes"
@@ -4642,10 +4681,18 @@ export function createUi(
 					if ( entry?.text && entry.kind === "create" ) {
 						guildManagerHud.takeField();
 						sendGameplay( { kind: "guild-create", gid: entry.npc, name: entry.text } );
-					} else if ( entry?.text ) {
-						// 5D3EB0: the master names a member; only a member may take over.
-						const member = view.gameplay?.social?.guild?.members.find( m => m.name === entry.text );
-						if ( member && member.grade !== 0 ) {
+					} else if ( entry?.member ) {
+						// 5F1D60 opens 5D3EB0's named confirmation before sending.
+						const guild = view.gameplay?.social?.guild;
+						const member = guild?.members.find( m => m.id === entry.member );
+						const master = guild?.members.some( m =>
+							m.id === view?.gameplay?.social?.self && m.grade === 0
+						);
+						if ( member && member.grade !== 0 && master ) {
+							if ( !entry.confirmed ) {
+								guildManagerHud.confirmTransfer();
+								return;
+							}
 							guildManagerHud.takeField();
 							sendGameplay( { kind: "guild-master-leave", gid: entry.npc, id: member.id } );
 						}
@@ -5074,7 +5121,8 @@ export function createUi(
 				return;
 			}
 			if ( event.kind === "scroll" && panel === "Guild" ) {
-				if ( grantPowerHud.isOpen() ) grantPowerHud.scroll( Math.sign( event.delta ) );
+				if ( guildNoticeHud.isOpen() ) guildNoticeHud.scroll( Math.sign( event.delta ) );
+				else if ( grantPowerHud.isOpen() ) grantPowerHud.scroll( Math.sign( event.delta ) );
 				else if ( guildTab === 2 || guildTab === 1 && guildWarHud.state().relation === 1 ) {
 					const state = guildWarHud.state(), social = view?.gameplay?.social;
 					const memberControl = controls.find( c => c.id === "war-members-up" );
@@ -5736,6 +5784,13 @@ export function createUi(
 					activate( to ? "to-cos" : "from-cos" );
 					return;
 				}
+			}
+			if ( event.kind === "drag" && event.id === "guild-notice-scroll-thumb" && guildNoticeHud.isOpen() ) {
+				const track = controls.find( c => c.id === "guild-notice-scroll-down" );
+				const up = controls.find( c => c.id === "guild-notice-scroll-up" );
+				if ( track && up ) guildNoticeHud.drag( event.dy, track.rect[1] - up.rect[1] - 32 );
+				dirty = true;
+				return;
 			}
 			if (
 				event.kind === "drag" &&
@@ -8209,6 +8264,74 @@ export function createUi(
 				for ( const node of authoredPaintOrder( layout ) ) {
 					if ( !exclude.includes( node.id ) ) authoredChrome( node, px, py );
 				}
+			}
+			/*
+			================
+			guildNoticePanel
+
+			5F3D70 / 5F417A: six lines, 18-pixel pitch, scrollbar range lines - 6.
+			The compact adaptation retains the same controls within the available area.
+			================
+			*/
+			function guildNoticePanel( px: number, py: number, width = 440, height = 177 ) {
+				const page = hud.data()?.windows.ifguildnotifycontents;
+				if ( !page ) return;
+				const at = ( id: number ) => Object.values( page ).find( node => node.id === id )!;
+				const dx = width - 440, dy = height - 177;
+				for ( const id of [ 2, 3, 1 ] ) {
+					const node = at( id ), r = node.rect;
+					authoredChrome(
+						{ ...node, rect: [ r[0], r[1] + (id === 2 ? dy : 0), r[2] + dx, r[3] + (id === 2 ? 0 : dy) ] },
+						px,
+						py
+					);
+				}
+				// Six native baselines need 108 pixels; clip within the 117-pixel
+				// backing, rather than cutting the sixth glyph row at the authored 101.
+				const body: UiRect = [ px + 27, py + 27, 371 + dx, 108 + dy ];
+				const lines = textBoxLines(
+					game?.social?.guild?.contents ?? "",
+					body[2],
+					value => text.run( value ).width
+				);
+				const visible = Math.max( 1, Math.ceil( body[3] / 18 ) ),
+					offset = guildNoticeHud.position( lines.length, visible );
+				controls.push( {
+					id: "guild-notice-body",
+					label: lines.slice( offset, offset + visible ).join( "\n" ),
+					rect: body,
+					kind: "region"
+				} );
+				lines.slice( offset, offset + visible ).forEach( ( line, index ) =>
+					quads.push(
+						...text.quads( line, [ body[0], body[1] + index * 18, body[2], 18 ], body, white, {
+							vAlign: 0,
+							overflow: "clip"
+						} )
+					)
+				);
+				const scroll = chatScrollbar(
+					"guild-notice-scroll",
+					[ px + 406 + dx, py + 32, 16, 75 + dy ],
+					lines.length,
+					visible,
+					Math.max( 0, lines.length - visible - offset ),
+					resources.size,
+					full,
+					hover,
+					pressed
+				);
+				paths.push( ...scroll.paths );
+				quads.push( ...scroll.quads );
+				controls.push( ...scroll.controls.map( c => ({ ...c, disabled: lines.length <= visible }) ) );
+				const confirm = at( 4 );
+				authoredLabeledButton(
+					{ ...confirm, rect: [ confirm.rect[0] + dx / 2, confirm.rect[1] + dy, 76, 24 ] },
+					px,
+					py,
+					"guild-notice-close",
+					hudCopy( confirm.text )
+				);
 			}
 			/*
 			================
@@ -15497,6 +15620,17 @@ export function createUi(
 								24
 							] );
 							const listTop = noticeY + 28;
+							controls.push( {
+								id: "guild-notice-read",
+								label: guild.subject,
+								rect: [ left, noticeY, inner, 24 ],
+								kind: "button",
+								disabled: !guild.contents
+							} );
+							if ( guildNoticeHud.isOpen() ) {
+								guildNoticePanel( left - 15, listTop, inner + 30, Math.max( 130, bottom - listTop ) );
+								return;
+							}
 							if (
 								grantPowerHud.isOpen() && hudData.windows.ifguildgrantpower &&
 								hudData.windows.ifguildgrantpowerslot
@@ -15985,7 +16119,16 @@ export function createUi(
 							for ( const id of [ 1, 2, 3 ] ) {
 								authoredChrome( Object.values( page ).find( n => n.id === id )!, gx, gy );
 							}
-							nativePage( page, gx, gy, [ 1, 2, 3, 34, 104 ] );
+							nativePage( page, gx, gy, [
+								1,
+								2,
+								3,
+								34,
+								104,
+								...(guildNoticeHud.isOpen() ?
+									[ 80, 81, 82, 101, 102, 103, 105, 106, 120, 121, 122, 123, 124, 125, 126 ] :
+									[])
+							] );
 							/*
 						================
 						at
@@ -16012,7 +16155,11 @@ export function createUi(
 							const notice = at( 61 ), noticePath = ROOT + "interface/guild/gil_windo02_off.png";
 							authoredImage( notice, gx, gy, noticePath );
 							authoredText( at( 63 ), gx, gy, hudCopy( at( 63 ).text ) );
-							for ( const id of grantPowerHud.isOpen() ? [] : [ 121, 122, 123, 124, 126 ] ) {
+							for (
+								const id of grantPowerHud.isOpen() || guildNoticeHud.isOpen() ?
+									[] :
+									[ 121, 122, 123, 124, 126 ]
+							) {
 								const node = at( id ),
 									caption = hudCopy(
 										id === 121 ?
@@ -16027,7 +16174,7 @@ export function createUi(
 							}
 							// 5E8850 creates empty 312x24 rows until six exist. Those native row
 							// textures are the backing; a bare scroll-manager rectangle is transparent.
-							for ( let i = 0; !grantPowerHud.isOpen() && i < 6; i++ ) {
+							for ( let i = 0; !grantPowerHud.isOpen() && !guildNoticeHud.isOpen() && i < 6; i++ ) {
 								const path = ROOT + "interface/guild/gil_bar02_deselect.png";
 								paths.push( path );
 								if ( resources.has( path ) ) {
@@ -16036,6 +16183,18 @@ export function createUi(
 							}
 							if ( !guild ) authoredText( at( 38 ), gx, gy, hudCopy( "UIIT_STT_NO_GUILD" ) );
 							if ( guild ) {
+								controls.push( {
+									id: "guild-notice-read",
+									label: guild.subject,
+									rect: [
+										gx + notice.rect[0],
+										gy + notice.rect[1],
+										notice.rect[2] - 28,
+										notice.rect[3]
+									],
+									kind: "button",
+									disabled: !guild.contents
+								} );
 								const leader = guild.members.find( m => m.grade === 0 ),
 									self = guild.members.find( m => m.id === game?.social?.self );
 								for (
@@ -16072,7 +16231,8 @@ export function createUi(
 									rect: authoredRect( s, gx, gy ),
 									kind: "region"
 								} );
-								if (
+								if ( guildNoticeHud.isOpen() ) guildNoticePanel( gx + 6, gy + 138 );
+								else if (
 									grantPowerHud.isOpen() && hudData.windows.ifguildgrantpower &&
 									hudData.windows.ifguildgrantpowerslot
 								) {
@@ -16160,6 +16320,7 @@ export function createUi(
 											[ 62, "guild-dialog:notice" ]
 										] as const
 									) {
+										if ( guildNoticeHud.isOpen() && id !== 45 && id !== 62 ) continue;
 										const node = id === 105 ?
 											{ ...at( id ), rect: [ 353, 223, 0, 0 ] as UiRect } :
 											at( id );
@@ -18533,112 +18694,262 @@ export function createUi(
 				guildField = guildManagerHud.field(),
 				guildVote = guildManagerHud.vote();
 			if ( worldVisible && (guildAsk || guildField || guildVote) ) {
-				// The guild manager's boxes (guild-manager-hud.ts) in the job box's frame.
-				const layout = guildProposalLayout( w, h );
-				const say = ( key: string, ...args: string[] ) =>
-					noticeText( hudCopy, { key, value: 0, arguments: args } );
-				const price = guildAsk?.kind === "level-up" ? guildLevelUpPrice( guildAsk.value ) : undefined;
-				const title = guildField?.kind === "create" ?
-					"UIIT_CTL_GUILD_CREATE" :
-					guildField ?
-					"UIIT_STT_MLEAVE_WINDOWS" :
-					guildVote ?
-					"UIIT_STT_MRELEASE_VOTESTATE" :
-					"UIIT_STT_CONFIRM_BOX";
-				const lines: Record<string, readonly [string, string]> = {
-					"level-up": [
-						say( "UIIT_MSG_GUILD_LEVEL_UP_CONDITION", String( (guildAsk?.value ?? 0) + 1 ) ),
-						price ?
-							hudCopy( "UIIT_STT_NEED_GP" ) + " : " + price.gp + "   " +
-							hudCopy( "UIIT_STT_CIRCULATION_NEEDMONEY" ) + " : " + price.gold :
-							hudCopy( "UIIT_MSG_ERROR_GUILD_LEVEL_UP_FULL" )
-					],
-					"dissolve": [
-						hudCopy( "UIIT_MSG_GUILD_BREAK_CONFIRM" ),
-						hudCopy( "UIIT_MSG_GUILD_BREAK_ANOTHER_EXPLAIN" )
-					],
-					"secede": [ hudCopy( "UIIT_MSG_GUILD_SECESSION_CONFIRM" ), "" ],
-					"release": [ hudCopy( "UIIT_MSG_MRELEASE_CONFIRM" ), "" ],
-					"compensation": [
-						say( "UIIT_CTL_GUILDWAR_COMPENSATION_01", String( guildAsk?.value ?? 0 ) ),
-						hudCopy( "UIIT_CTL_GUILDWAR_COMPENSATION_02" )
-					],
-					"master-leave": [ hudCopy( "UIIT_MSG_MLEAVE_INPUTID" ), "" ],
-					"create": [ "", "" ],
-					"vote": [
-						Math.ceil( (guildVote?.remainingMs ?? 0) / 60000 ) + " " + hudCopy( "PARAM_MINUTE" ),
-						""
-					]
-				};
-				const [first, second] = lines[guildAsk?.kind ?? guildField?.kind ?? "vote"]!;
-				controls = [];
-				blocks = [ full ];
-				paths.push( ...partyProposalAssets() );
-				quads.push(
-					...normalTile( layout.background, MESSAGE_TILE, resources.size( MESSAGE_TILE ), full ),
-					...frameRing(
-						layout.frame,
-						MESSAGE_FRAME,
-						PARTS.map( p => resources.size( MESSAGE_FRAME + p + ".png" ) ),
-						full
-					),
-					...text.quads( hudCopy( title ), layout.title, full, white, { hAlign: 1, vAlign: 0 } ),
-					...text.quads( first, layout.name, full, white, { hAlign: 1, vAlign: 0 } )
-				);
-				if ( guildField ) {
-					const field: UiRect = [ layout.question[0], layout.question[1], layout.question[2], 16 ];
-					controls.push( {
-						id: "guild-manager-text",
-						label: hudCopy( title ),
-						kind: "text",
-						value: guildField.text,
-						rect: field,
-						maxLength: 12
-					} );
-					rect( field, [ 0, 0, 0, .6 ], "", [ 0, 0, 1, 1 ], full );
-					quads.push(
-						...text.quads( guildField.text, field, field, white, {
-							hAlign: 1,
-							vAlign: 1,
-							overflow: "clip"
-						} )
+				const levelPage = hud.data()?.windows.ifguildlevelup;
+				const levelRoot = hud.data()?.root.GDR_GUILD_LEVEL_UP;
+				const transferPage = hud.data()?.windows.ifguildmasterleave,
+					transferSlot = hud.data()?.windows.ifguildmasterleaveslot;
+				const transferRoot = hud.data()?.root.GDR_GUILDMASTER_LEAVE;
+				if (
+					guildField?.kind === "master-leave" && !guildField.confirmed && transferPage && transferSlot &&
+					transferRoot
+				) {
+					// 5F25F0 creates Create then ListWnd; 5F2390 omits the current master.
+					const x = Math.max( 0, (w - transferRoot.rect[2]) / 2 ),
+						y = Math.max( 0, (h - transferRoot.rect[3]) / 2 );
+					const at = ( id: number ) => Object.values( transferPage ).find( n => n.id === id )!;
+					const members = game?.social?.guild?.members.filter( m =>
+						m.grade !== 0
+					).sort( ( a, b ) => a.id - b.id ) ?? [];
+					const offset = guildManagerHud.transferPosition( members.length );
+					controls = [];
+					blocks = [ full ];
+					authoredChrome(
+						{
+							...transferRoot,
+							type: "CIFFrame",
+							rect: [ 0, 0, transferRoot.rect[2], transferRoot.rect[3] ]
+						},
+						x,
+						y
 					);
-					if ( focus === "guild-manager-text" && caretVisible ) {
-						const width = text.run( guildField.text ).width;
-						rect(
-							[ field[0] + (field[2] + width) / 2, field[1] + 1, 2, 14 ],
+					nativePage( transferPage, x, y, [ 11, 12 ] );
+					quads.push(
+						...text.quads(
+							hudCopy( "UIIT_STT_MLEAVE_WINDOWS" ),
+							[ x + 10, y + 12, transferRoot.rect[2] - 21, 14 ],
+							full,
 							white,
-							"",
-							[ 0, 0, 1, 1 ],
-							field
+							{ hAlign: 1, vAlign: 0 }
+						)
+					);
+					members.slice( offset, offset + 7 ).forEach( ( member, i ) => {
+						const row = at( 31 + i ), rx = x + row.rect[0], ry = y + row.rect[1];
+						nativePage( transferSlot, rx, ry );
+						authoredImage( Object.values( transferSlot ).find( n => n.id === 10 )!, rx, ry );
+						const name = Object.values( transferSlot ).find( n => n.id === 11 )!;
+						authoredText( name, rx, ry, member.name, true );
+						if ( member.id === guildField.member ) {
+							image( [ rx + 15, ry + 7, 16, 16 ], ROOT + "interface/ifcommon/com_checkbutton_on.png" );
+						}
+						controls.push( {
+							id: "guild-transfer-member:" + member.id,
+							label: member.name,
+							rect: [ rx, ry, 196, 23 ],
+							kind: "button",
+							selected: member.id === guildField.member
+						} );
+					} );
+					const scroll = chatScrollbar(
+						"guild-transfer",
+						[ x + 214, y + 80, 16, 116 ],
+						members.length,
+						7,
+						Math.max( 0, members.length - 7 - offset ),
+						resources.size,
+						full,
+						hover,
+						pressed
+					);
+					paths.push( ...scroll.paths );
+					quads.push( ...scroll.quads );
+					controls.push( ...scroll.controls.map( c => ({ ...c, disabled: members.length <= 7 }) ) );
+					authoredLabeledButton(
+						at( 11 ),
+						x,
+						y,
+						"guild-manager-yes",
+						hudCopy( at( 11 ).text ),
+						!members.some( m => m.id === guildField.member )
+					);
+					authoredLabeledButton( at( 12 ), x, y, "guild-manager-no", hudCopy( at( 12 ).text ) );
+				} else if ( guildAsk?.kind === "level-up" && levelPage && levelRoot ) {
+					// CIFGuildLevelUp::OnCreate 5EF9A0; NPC case 5DAEF0 opens root 49.
+					const x = Math.max( 0, (w - levelRoot.rect[2]) / 2 ),
+						y = Math.max( 0, (h - levelRoot.rect[3]) / 2 );
+					const at = ( id: number ) => Object.values( levelPage ).find( n => n.id === id )!;
+					const guild = game?.social?.guild, name = guild?.name ?? "", level = guildAsk.value;
+					const price = guildLevelUpPrice( level );
+					const say = ( key: string, ...args: string[] ) =>
+						noticeText( hudCopy, { key, value: 0, arguments: args } );
+					controls = [];
+					blocks = [ full ];
+					authoredChrome(
+						{ ...levelRoot, type: "CIFFrame", rect: [ 0, 0, levelRoot.rect[2], levelRoot.rect[3] ] },
+						x,
+						y
+					);
+					nativePage( levelPage, x, y, [ 2, 3, 4, 5, 6, 7, 8, 9, 10, 49 ] );
+					const nameWidth = Math.min( 180, text.run( name ).width ), center = levelRoot.rect[2] / 2;
+					image(
+						[ x + center - nameWidth / 2 - 18, y + 43, 16, 16 ],
+						ROOT + "interface/guild/gil_mark01.png"
+					);
+					authoredText( at( 5 ), x, y, name, true );
+					authoredText(
+						{ ...at( 6 ), rect: [ center + nameWidth / 2 + 20, 45, 63, 15 ] },
+						x,
+						y,
+						say( "UIIT_STT_LV_LEVEL", String( level ) ),
+						true
+					);
+					for (
+						const [id, value] of [
+							[ 7, say( "UIIT_MSG_GUILD_LEVEL_UP_CONDITION", String( Math.min( 5, level + 1 ) ) ) ],
+							[
+								8,
+								price ?
+									hudCopy( "UIIT_STT_NEED_GP" ) + " :  " + price.gp + " GP" :
+									hudCopy( "UIIT_MSG_ERROR_GUILD_LEVEL_UP_FULL" )
+							],
+							[
+								9,
+								price ?
+									hudCopy( "UIIT_STT_CIRCULATION_NEEDMONEY" ) + " :  " + price.gold + " " +
+									hudCopy( "UIIT_STT_GOLD" ) :
+									""
+							],
+							[ 10, say( "UIIT_MSG_QUESTION_GUILD_LEVEL_UP", name, String( Math.min( 5, level + 1 ) ) ) ]
+						] as const
+					) {
+						// Preserve authored origins. Inference: allow longer translations
+						// up to the inner frame edge instead of overflowing that frame.
+						const node = at( id );
+						authoredText(
+							{
+								...node,
+								rect: [
+									node.rect[0],
+									node.rect[1],
+									id === 7 ? node.rect[2] : 342 - node.rect[0],
+									node.rect[3]
+								]
+							},
+							x,
+							y,
+							value,
+							true
 						);
 					}
+					authoredLabeledButton( at( 2 ), x, y, "guild-manager-yes", hudCopy( at( 2 ).text ) );
+					authoredLabeledButton( at( 3 ), x, y, "guild-manager-no", hudCopy( at( 3 ).text ) );
 				} else {
-					// Inference: wrap manager explanations inside their message frame.
-					// The generic proposal's single text line let long English strings
-					// escape both sides of the dialog and cover the NPC menu behind it.
-					const body: UiRect = [ layout.frame[0] + 12, layout.question[1], layout.frame[2] - 24, 28 ];
-					textLines( second, body[2], value => text.run( value ).width ).slice( 0, 2 ).forEach(
-						( line, index ) =>
-							quads.push(
-								...text.quads( line, [ body[0], body[1] + index * 14, body[2], 14 ], body, white, {
-									hAlign: 1,
-									vAlign: 0
-								} )
-							)
+					// The guild manager's boxes (guild-manager-hud.ts) in the job box's frame.
+					const layout = guildProposalLayout( w, h );
+					const say = ( key: string, ...args: string[] ) =>
+						noticeText( hudCopy, { key, value: 0, arguments: args } );
+					const price = guildAsk?.kind === "level-up" ? guildLevelUpPrice( guildAsk.value ) : undefined;
+					const title = guildField?.kind === "create" ?
+						"UIIT_CTL_GUILD_CREATE" :
+						guildField ?
+						"UIIT_STT_MLEAVE_WINDOWS" :
+						guildVote ?
+						"UIIT_STT_MRELEASE_VOTESTATE" :
+						"UIIT_STT_CONFIRM_BOX";
+					const lines: Record<string, readonly [string, string]> = {
+						"level-up": [
+							say( "UIIT_MSG_GUILD_LEVEL_UP_CONDITION", String( (guildAsk?.value ?? 0) + 1 ) ),
+							price ?
+								hudCopy( "UIIT_STT_NEED_GP" ) + " : " + price.gp + "   " +
+								hudCopy( "UIIT_STT_CIRCULATION_NEEDMONEY" ) + " : " + price.gold :
+								hudCopy( "UIIT_MSG_ERROR_GUILD_LEVEL_UP_FULL" )
+						],
+						"dissolve": [
+							hudCopy( "UIIT_MSG_GUILD_BREAK_CONFIRM" ),
+							hudCopy( "UIIT_MSG_GUILD_BREAK_ANOTHER_EXPLAIN" )
+						],
+						"secede": [ hudCopy( "UIIT_MSG_GUILD_SECESSION_CONFIRM" ), "" ],
+						"release": [ hudCopy( "UIIT_MSG_MRELEASE_CONFIRM" ), "" ],
+						"compensation": [
+							say( "UIIT_CTL_GUILDWAR_COMPENSATION_01", String( guildAsk?.value ?? 0 ) ),
+							hudCopy( "UIIT_CTL_GUILDWAR_COMPENSATION_02" )
+						],
+						"master-leave": [ "[" + (guildField?.text ?? "") + "]", hudCopy( "UIIT_MSG_MLEAVE_CONFIRM" ) ],
+						"create": [ "", "" ],
+						"vote": [
+							Math.ceil( (guildVote?.remainingMs ?? 0) / 60000 ) + " " + hudCopy( "PARAM_MINUTE" ),
+							""
+						]
+					};
+					const [first, second] = lines[guildAsk?.kind ?? guildField?.kind ?? "vote"]!;
+					controls = [];
+					blocks = [ full ];
+					paths.push( ...partyProposalAssets() );
+					quads.push(
+						...normalTile( layout.background, MESSAGE_TILE, resources.size( MESSAGE_TILE ), full ),
+						...frameRing(
+							layout.frame,
+							MESSAGE_FRAME,
+							PARTS.map( p => resources.size( MESSAGE_FRAME + p + ".png" ) ),
+							full
+						),
+						...text.quads( hudCopy( title ), layout.title, full, white, { hAlign: 1, vAlign: 0 } ),
+						...text.quads( first, layout.name, full, white, { hAlign: 1, vAlign: 0 } )
 					);
-				}
-				button(
-					"guild-manager-yes",
-					hudCopy( guildAsk ? "UIIT_CTL_YES" : "UIIT_CTL_OK" ),
-					...layout.accept.slice( 0, 3 ) as [number, number, number]
-				);
-				if ( !guildVote ) {
+					if ( guildField?.kind === "create" ) {
+						const field: UiRect = [ layout.question[0], layout.question[1], layout.question[2], 16 ];
+						controls.push( {
+							id: "guild-manager-text",
+							label: hudCopy( title ),
+							kind: "text",
+							value: guildField.text,
+							rect: field,
+							maxLength: 12
+						} );
+						rect( field, [ 0, 0, 0, .6 ], "", [ 0, 0, 1, 1 ], full );
+						quads.push(
+							...text.quads( guildField.text, field, field, white, {
+								hAlign: 1,
+								vAlign: 1,
+								overflow: "clip"
+							} )
+						);
+						if ( focus === "guild-manager-text" && caretVisible ) {
+							const width = text.run( guildField.text ).width;
+							rect(
+								[ field[0] + (field[2] + width) / 2, field[1] + 1, 2, 14 ],
+								white,
+								"",
+								[ 0, 0, 1, 1 ],
+								field
+							);
+						}
+					} else {
+						// Inference: wrap manager explanations inside their message frame.
+						// The generic proposal's single text line let long English strings
+						// escape both sides of the dialog and cover the NPC menu behind it.
+						const body: UiRect = [ layout.frame[0] + 12, layout.question[1], layout.frame[2] - 24, 28 ];
+						textLines( second, body[2], value => text.run( value ).width ).slice( 0, 2 ).forEach(
+							( line, index ) =>
+								quads.push(
+									...text.quads( line, [ body[0], body[1] + index * 14, body[2], 14 ], body, white, {
+										hAlign: 1,
+										vAlign: 0
+									} )
+								)
+						);
+					}
 					button(
-						"guild-manager-no",
-						hudCopy( guildAsk ? "UIIT_CTL_NO" : "UIIT_CTL_CANCEL" ),
-						...layout.refuse.slice( 0, 3 ) as [number, number, number]
+						"guild-manager-yes",
+						hudCopy( guildAsk ? "UIIT_CTL_YES" : "UIIT_CTL_OK" ),
+						...layout.accept.slice( 0, 3 ) as [number, number, number]
 					);
+					if ( !guildVote ) {
+						button(
+							"guild-manager-no",
+							hudCopy( guildAsk ? "UIIT_CTL_NO" : "UIIT_CTL_CANCEL" ),
+							...layout.refuse.slice( 0, 3 ) as [number, number, number]
+						);
+					}
 				}
 			}
 			if ( panel !== "Shop" ) repairHud.reset();

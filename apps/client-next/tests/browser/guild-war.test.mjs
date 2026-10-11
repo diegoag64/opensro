@@ -332,6 +332,39 @@ test(
 				warFixture.draw();
 			} );
 			await click( "guild-tab:0" );
+			await page.evaluate( () => {
+				warFixture.state.gameplay.social.guild.contents = Array.from(
+					{ length: 14 },
+					( _, i ) => "Notice line " + (i + 1)
+				).join( "\n" );
+				warFixture.draw();
+			} );
+			await click( "guild-notice-read" );
+			await draw( "guild-notice-close" );
+			assert.equal( await page.locator( '[data-ui-id^="social-member:"]' ).count(), 0 );
+			assert.equal( await page.locator( '[data-ui-id="guild-dialog:authority"]' ).count(), 0 );
+			await page.screenshot( { path: "temp/artifacts/guild-war/notice-reader.png" } );
+			await page.locator( '[data-ui-id="guild-notice-body"]' ).hover();
+			await page.mouse.wheel( 0, 100 );
+			await page.evaluate( () => warFixture.draw() );
+			const readerLabel = () => page.locator( '[data-ui-id="guild-notice-body"]' ).getAttribute( "aria-label" );
+			assert.match( await readerLabel() ?? "", /^Notice line 2\n/ );
+			for ( let i = 0; i < 20; i++ ) await click( "guild-notice-scroll-down" );
+			assert.match( await readerLabel() ?? "", /Notice line 14$/ );
+			await page.screenshot( { path: "temp/artifacts/guild-war/notice-reader-scrolled.png" } );
+			await click( "guild-notice-close" );
+			await draw( "social-member:20" );
+			await click( "guild-notice-read" );
+			await draw( "guild-notice-close" );
+			assert.match( await readerLabel() ?? "", /^Notice line 1\n/ );
+			await click( "guild-tab:1" );
+			await click( "guild-tab:0" );
+			await draw( "social-member:20" );
+			assert.equal( await page.locator( '[data-ui-id="guild-notice-close"]' ).count(), 0 );
+			await page.evaluate( () => {
+				warFixture.state.gameplay.social.guild.contents = "Meet at the guild warehouse.\nBring your equipment.";
+				warFixture.draw();
+			} );
 			await draw( "social-member:20" );
 			await page.locator( '[data-ui-id="social-member:20"]' ).hover();
 			await page.mouse.wheel( 0, 100 );
@@ -430,6 +463,32 @@ test(
 			assert.deepEqual( await page.evaluate( () => warFixture.commands.at( -1 ).command ), {
 				kind: "guild-level-up",
 				gid: 99
+			} );
+			await click( "npc-guild:master-leave" );
+			await draw( "guild-transfer-member:20" );
+			assert.equal( await page.locator( '[data-ui-id="guild-transfer-member:10"]' ).count(), 0 );
+			assert.equal( await page.locator( '[data-ui-id="guild-manager-yes"]' ).isDisabled(), true );
+			const transferBefore = await page.evaluate( () => warFixture.commands.length );
+			await click( "guild-transfer-member:20" );
+			await click( "guild-manager-yes" );
+			await draw( "guild-manager-no" );
+			assert.equal( await page.evaluate( () => warFixture.commands.length ), transferBefore );
+			await page.screenshot( { path: "temp/artifacts/guild-war/manager-transfer-confirm.png" } );
+			await click( "guild-manager-no" );
+			await click( "npc-guild:master-leave" );
+			await draw( "guild-transfer-member:20" );
+			assert.equal( await page.locator( '[data-ui-id="guild-manager-yes"]' ).isDisabled(), true );
+			await page.locator( '[data-ui-id="guild-transfer-member:20"]' ).hover();
+			await page.mouse.wheel( 0, 100 );
+			await draw( "guild-transfer-member:27" );
+			await click( "guild-transfer-member:27" );
+			await page.screenshot( { path: "temp/artifacts/guild-war/manager-transfer-selected.png" } );
+			await click( "guild-manager-yes" );
+			await click( "guild-manager-yes" );
+			assert.deepEqual( await page.evaluate( () => warFixture.commands.at( -1 ).command ), {
+				kind: "guild-master-leave",
+				gid: 99,
+				id: 27
 			} );
 			await page.evaluate( () => {
 				warFixture.state.gameplay.social.guild = null;

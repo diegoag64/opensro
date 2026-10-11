@@ -6,8 +6,8 @@ guild-manager-hud.ts - the guild manager's dialogs
 The guild set's rows (guild-manager.ts) raise native boxes: questions for
 the level-up window (CIFGuildLevelUp), disband (box 0x13), leave (box
 0x14), release (UIIT_MSG_MRELEASE_CONFIRM) and the war compensation claim
-(5D4050); name fields for the create input (5D2540) and the master-leave
-window (UIIT_MSG_MLEAVE_INPUTID); and the vote state, which a v1.150 client
+(5D4050); the create input (5D2540), master-transfer selection (5F2390)
+and subsequent confirmation (5D3EB0); and the vote state, which a v1.150 client
 can only read: it never receives the candidates (0x3A6C type 2 asserts).
 The UI draws from this owner every frame.
 
@@ -38,6 +38,8 @@ export interface GuildManagerField {
 	readonly kind: "create" | "master-leave";
 	readonly npc: number;
 	readonly text: string;
+	readonly member?: number;
+	readonly confirmed?: boolean;
 }
 
 /*
@@ -47,6 +49,7 @@ createGuildManagerHud
 */
 export function createGuildManagerHud() {
 	let soldierNpc: number | undefined, soldierSequence = 0;
+	let transferOffset = 0;
 	let ask: GuildManagerAsk | null = null,
 		field: GuildManagerField | null = null,
 		vote: { readonly remainingMs: number; } | null = null;
@@ -107,6 +110,7 @@ export function createGuildManagerHud() {
 		================
 		*/
 		openField( kind: GuildManagerField["kind"], npc: number ) {
+			transferOffset = 0;
 			ask = null;
 			vote = null;
 			field = { kind, npc, text: "" };
@@ -118,6 +122,31 @@ export function createGuildManagerHud() {
 		*/
 		field(): GuildManagerField | null {
 			return field;
+		},
+		/*
+		================
+		selectTransfer
+		================
+		*/
+		selectTransfer( member: number, name: string ) {
+			if ( field?.kind === "master-leave" && !field.confirmed ) field = { ...field, member, text: name };
+		},
+		/*
+		================
+		confirmTransfer
+		================
+		*/
+		confirmTransfer() {
+			if ( field?.member ) field = { ...field, confirmed: true };
+		},
+		/*
+		================
+		transferPosition
+		================
+		*/
+		transferPosition( count: number, delta = 0 ) {
+			transferOffset = Math.max( 0, Math.min( Math.max( 0, count - 7 ), transferOffset + delta ) );
+			return Math.floor( transferOffset );
 		},
 		/*
 		================
