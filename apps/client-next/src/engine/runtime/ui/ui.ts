@@ -4125,6 +4125,10 @@ export function createUi(
 			guildDialog = id.slice( 13 );
 			socialSubject = view.gameplay?.social?.guild?.subject ?? "";
 			socialContents = view.gameplay?.social?.guild?.contents ?? "";
+			const member = view.gameplay?.social?.guild?.members.find( row => row.id === socialMember );
+			if ( guildDialog === "title" ) socialName = member?.grant ?? "";
+			if ( guildDialog === "role" ) socialAmount = String( member?.role ?? 0 );
+			if ( guildDialog === "donate" ) socialAmount = "";
 		} else if ( id === "guild-dialog-close" ) guildDialog = "";
 		else if ( id.startsWith( "guild-role-choice:" ) ) {
 			socialAmount = String( fortressGrantRole( Number( id.slice( 18 ) ) ) );
@@ -7844,12 +7848,20 @@ export function createUi(
 			authoredText
 			================
 			*/
-			function authoredText( node: AuthoredControl, ox: number, oy: number, value: string ) {
+			function authoredText(
+				node: AuthoredControl,
+				ox: number,
+				oy: number,
+				value: string,
+				clipToControl = false
+			) {
+				const box = authoredClientRect( node, ox, oy );
 				quads.push(
-					...text.quads( value, authoredClientRect( node, ox, oy ), full, node.color, {
+					...text.quads( value, box, clipToControl ? box : full, node.color, {
 						fontIndex: node.fontIndex,
 						hAlign: node.hAlign,
-						vAlign: node.vAlign
+						vAlign: node.vAlign,
+						...(clipToControl ? { overflow: "ellipsis" as const } : {})
 					} )
 				);
 			}
@@ -8082,7 +8094,65 @@ export function createUi(
 				maxLength: number
 			) {
 				const r = authoredRect( node, ox, oy );
-				controls.push( { id, label: node.name, kind: "text", value, rect: r, maxLength } );
+				const multiline = id === "social-contents";
+				controls.push( {
+					id,
+					label: node.name,
+					kind: "text",
+					value,
+					rect: r,
+					maxLength,
+					...(multiline ? { multiline: true, textAlign: "left" as const } : {})
+				} );
+				if ( multiline ) {
+					const LINE_HEIGHT = 16;
+					const measure = ( line: string ) => text.run( line ).width,
+						lines = textBoardLines( value, r[2], measure ),
+						start = Math.min( value.length, selection[0] ?? 0 ),
+						end = Math.min( value.length, selection[1] ?? start ),
+						caretLines = textBoardLines( value.slice( 0, end ), r[2], measure ),
+						capacity = Math.max( 1, Math.floor( r[3] / LINE_HEIGHT ) ),
+						first = focus === id ? Math.max( 0, caretLines.length - capacity ) : 0;
+					let offset = 0;
+					for ( const [index, line] of lines.entries() ) {
+						const y = r[1] + (index - first) * LINE_HEIGHT;
+						if ( index >= first && index < first + capacity ) {
+							if ( focus === id && end > offset && start < offset + line.length ) {
+								const left = measure( line.slice( 0, Math.max( 0, start - offset ) ) ),
+									right = measure( line.slice( 0, Math.min( line.length, end - offset ) ) );
+								rect( [ r[0] + left, y, right - left, LINE_HEIGHT ], [ .2, .4, .7, .6 ], "", [
+									0,
+									0,
+									1,
+									1
+								], r );
+							}
+							quads.push(
+								...text.quads( line, [ r[0], y, r[2], LINE_HEIGHT ], r, white, {
+									vAlign: 0,
+									overflow: "clip"
+								} )
+							);
+						}
+						offset += line.length;
+						if ( value[offset] === "\n" ) offset++;
+					}
+					if ( focus === id && caretVisible ) {
+						rect(
+							[
+								r[0] + measure( caretLines.at( -1 ) ?? "" ),
+								r[1] + (caretLines.length - 1 - first) * LINE_HEIGHT,
+								1,
+								LINE_HEIGHT
+							],
+							white,
+							"",
+							[ 0, 0, 1, 1 ],
+							r
+						);
+					}
+					return;
+				}
 				const start = Math.min( value.length, selection[0] ?? 0 ),
 					end = Math.min( value.length, selection[1] ?? start ),
 					before = text.run( value.slice( 0, start ) ).width,
@@ -14970,18 +15040,33 @@ export function createUi(
 					const at = ( id: number ) => Object.values( page ).find( n => n.id === id )!,
 						slotAt = ( id: number ) => Object.values( slot ).find( n => n.id === id )!,
 						list = at( 6 );
-					nativePage( page, ox, oy, [ 4, 5, 11 ] );
-					for ( const id of [ 12, 13, 14, 15, 16 ] ) {
-						authoredText( at( id ), ox, oy, hudCopy( at( id ).text ) );
-					}
+					nativePage( page, ox, oy, [ 4, 5 ] );
+					authoredImage( at( 11 ), ox, oy );
 					authoredText( at( 11 ), ox, oy, hudCopy( at( 11 ).text ) );
+					// Inference from the authored list/slot extents: five 402x24 bar children.
+					for ( let i = 0; i < 5; i++ ) {
+						const bar = barChrome(
+							[ ox + list.rect[0], oy + list.rect[1] + i * 23, 402, 24 ],
+							ROOT + "interface/ifcommon/com_bar01_",
+							resources.size,
+							full
+						);
+						paths.push( ...bar.paths );
+						quads.push( ...bar.quads );
+					}
 					grantPowerHud.visible().forEach( ( { row, mask }, i ) => {
 						const rx = ox + list.rect[0], ry = oy + list.rect[1] + i * 23;
 						authoredText( slotAt( 10 ), rx, ry, row.name );
 						GRANT_RIGHTS.forEach( ( right, column ) => {
-							const box = slotAt( 11 + column ),
-								path = box.texture.replace( "_off", mask & right ? "_on" : "_off" );
-							authoredImage( box, rx, ry, path );
+							const box = slotAt( 11 + column ), boxRect = authoredRect( box, rx, ry );
+							// ifcheckbox owns the mark; com_checkbutton02 has no _on sibling.
+							authoredImage( box, rx, ry );
+							if ( mask & right ) {
+								image(
+									[ boxRect[0], boxRect[1], 16, 16 ],
+									ROOT + "interface/ifcommon/com_checkbutton_on.png"
+								);
+							}
 							controls.push( {
 								id: "guild-grant:" + row.id + ":" + right,
 								label: hudCopy( at( 12 + column ).text ),
@@ -15013,18 +15098,65 @@ export function createUi(
 						leader = allianceLeader( social ),
 						selected = alliances.find( row => row.id === socialMember ),
 						armed = allianceButtons( social );
-					nativePage( page, gx, gy, [ 63, 64, 81, 82, 83 ] );
-					for ( const id of [ 21, 22, 23, 24, 42, 43, 44, 45 ] ) {
-						authoredText( at( id ), gx, gy, hudCopy( at( id ).text ) );
+					// 5F6FA0 / 5F72B0: empty notices replace the detail controls.
+					// Do not let nativePage paint both visibility branches first.
+					nativePage( page, gx, gy, [
+						22,
+						23,
+						24,
+						25,
+						26,
+						27,
+						28,
+						29,
+						30,
+						43,
+						44,
+						45,
+						46,
+						47,
+						48,
+						49,
+						50,
+						51,
+						52,
+						63,
+						64,
+						81,
+						82,
+						83
+					] );
+					for ( const id of [ ...(leader ? [ 22, 23, 24 ] : []), ...(selected ? [ 43, 44, 45 ] : []) ] ) {
+						authoredText( at( id ), gx, gy, hudCopy( at( id ).text ), true );
 					}
 					if ( !leader ) authoredText( at( 30 ), gx, gy, hudCopy( "UIIT_STT_NOT_EXIST_GUILD_RESPECT_ALLY" ) );
 					else {
+						authoredImage( at( 25 ), gx, gy );
+						authoredImage(
+							at( 27 ),
+							gx,
+							gy,
+							at( 27 ).texture.replace(
+								"china",
+								hudData!.countries[leader.model] === 1 ? "europe" : "china"
+							)
+						);
 						authoredText( at( 26 ), gx, gy, leader.name );
 						authoredText( at( 28 ), gx, gy, leader.master );
 						authoredText( at( 29 ), gx, gy, String( alliances.length ) );
 					}
 					if ( !selected ) authoredText( at( 52 ), gx, gy, hudCopy( "UIIT_STT_NOT_EXIST_GUILD" ) );
 					else {
+						authoredImage( at( 46 ), gx, gy );
+						authoredImage(
+							at( 49 ),
+							gx,
+							gy,
+							at( 49 ).texture.replace(
+								"china",
+								hudData!.countries[selected.model] === 1 ? "europe" : "china"
+							)
+						);
 						authoredText( at( 47 ), gx, gy, selected.name );
 						authoredText( { ...at( 48 ), color: gold }, gx, gy, String( selected.level ) );
 						authoredText( at( 50 ), gx, gy, selected.master );
@@ -15033,6 +15165,18 @@ export function createUi(
 					authoredLabeledButton( at( 63 ), gx, gy, "union-sort:name", hudCopy( at( 63 ).text ) );
 					authoredLabeledButton( at( 64 ), gx, gy, "union-sort:level", hudCopy( at( 64 ).text ) );
 					const list = at( 62 ), rows = unionHud.order( alliances );
+					// The scroll manager has no skin. Its CIFBarWnd children supply it;
+					// 5FB790 switches between com_bar01_ and com_bar01select_.
+					for ( let i = 0; i < Math.floor( list.rect[3] / 23 ); i++ ) {
+						const bar = barChrome(
+							[ gx + list.rect[0], gy + list.rect[1] + i * 23, 177, 24 ],
+							ROOT + "interface/ifcommon/com_bar01" + (rows[i]?.id === socialMember ? "select_" : "_"),
+							resources.size,
+							full
+						);
+						paths.push( ...bar.paths );
+						quads.push( ...bar.quads );
+					}
 					rows.slice( 0, Math.floor( list.rect[3] / 23 ) ).forEach( ( row, i ) => {
 						const ox = gx + list.rect[0], oy = gy + list.rect[1] + i * 23;
 						authoredText( slotAt( 11 ), ox, oy, row.name );
@@ -15040,7 +15184,7 @@ export function createUi(
 						controls.push( {
 							id: "social-member:" + row.id,
 							label: row.name,
-							rect: [ ox, oy, list.rect[2], 23 ],
+							rect: [ ox, oy, 177, 23 ],
 							kind: "button",
 							selected: row.id === socialMember
 						} );
@@ -15071,18 +15215,46 @@ export function createUi(
 					const selected = rows.find( row => row.id === state.selected );
 					const at = ( id: number ) => Object.values( page ).find( n => n.id === id )!;
 					const put = ( id: number, value: string ) => {
-						if ( at( id ) ) authoredText( at( id ), gx, gy, value );
+						// Inference: keep localized Guild detail ink inside its authored
+						// field; overflowing it can cover another pane or value.
+						if ( at( id ) ) authoredText( at( id ), gx, gy, value, true );
 					};
-					nativePage( page, gx, gy, scores ? [ 30, 60, 61, 62 ] : [ 33, 34, 51, 52 ] );
+					nativePage(
+						page,
+						gx,
+						gy,
+						scores ?
+							[ 12, 30, 60, 61, 62, 90, 91, 92, 93, 100, 101, 102, 108 ] :
+							[ 12, 13, 14, 15, 16, 22, 33, 34, 51, 52 ]
+					);
 					const count = scores ? 6 : 9, first = Math.min( state.offset, Math.max( 0, rows.length - count ) );
 					for ( let i = 0; i < count; i++ ) {
 						const row = rows[first + i],
 							r: UiRect = scores ?
 								[ gx + 11, gy + 33 + i * 23, 144, 24 ] :
 								[ gx + 236, gy + 35 + i * 23, 177, 24 ];
+						// 5FF670 fills nine empty rows with the native bar skin.
+						const bar = barChrome(
+							r,
+							ROOT + "interface/ifcommon/com_bar01" + (row?.id === state.selected ? "select_" : "_"),
+							resources.size,
+							full
+						);
+						paths.push( ...bar.paths );
+						quads.push( ...bar.quads );
 						if ( row ) {
-							if ( row.id === state.selected ) rect( r, [ .25, .3, .35, .6 ] );
-							quads.push( ...text.quads( row.name, [ r[0] + 6, r[1] + 7, r[2] - 12, 14 ], r, white ) );
+							const name = !scores && hudData?.windows.ifhostileguildslot?.GDR_HOSTILE_GUILD_NAME;
+							quads.push(
+								...text.quads(
+									row.name,
+									name ?
+										authoredClientRect( name, r[0], r[1] ) :
+										[ r[0] + 6, r[1] + 7, r[2] - 12, 14 ],
+									r,
+									white,
+									{ overflow: "clip" }
+								)
+							);
 							controls.push( {
 								id: "war-select:" + row.id,
 								label: row.name,
@@ -15109,6 +15281,7 @@ export function createUi(
 					if ( !scores ) {
 						for ( const id of selected ? [ 12, 13, 14, 15 ] : [ 12 ] ) put( id, hudCopy( at( id ).text ) );
 						if ( selected ) {
+							authoredImage( at( 16 ), gx, gy );
 							put( 17, selected.name );
 							for ( const id of [ 20, 21 ] ) put( id, hudCopy( "UIIT_CTL_GUILD_DONOTKNOW" ) );
 						} else put( 22, hudCopy( at( 22 ).text ) );
@@ -15136,8 +15309,11 @@ export function createUi(
 							hudCopy( at( id ).text )
 						);
 					}
-					for ( const id of [ 90, 91, 92, 93, 100, 101, 102 ] ) put( id, hudCopy( at( id ).text ) );
+					for ( const id of selected ? [ 90, 91, 92, 93, 100, 101, 102 ] : [ 90 ] ) {
+						put( id, hudCopy( at( id ).text ) );
+					}
 					if ( selected ) {
+						authoredImage( at( 12 ), gx, gy );
 						put( 95, selected.name );
 						put( 96, String( selected.localScore ) );
 						put( 97, String( selected.enemyScore ) );
@@ -15809,17 +15985,34 @@ export function createUi(
 							for ( const id of [ 1, 2, 3 ] ) {
 								authoredChrome( Object.values( page ).find( n => n.id === id )!, gx, gy );
 							}
-							nativePage( page, gx, gy, [ 1, 2, 3, 104 ] );
+							nativePage( page, gx, gy, [ 1, 2, 3, 34, 104 ] );
 							/*
 						================
 						at
 						================
 						*/
 							const at = ( id: number ) => Object.values( page ).find( n => n.id === id )!;
+							// Inference: the localized leader caption must stop before its race icon.
+							const leaderLabel = at( 34 ), leaderIcon = at( 40 );
+							authoredText(
+								{
+									...leaderLabel,
+									rect: [
+										leaderLabel.rect[0],
+										leaderLabel.rect[1],
+										leaderIcon.rect[0] - leaderLabel.rect[0] - 2,
+										leaderLabel.rect[3]
+									]
+								},
+								gx,
+								gy,
+								hudCopy( leaderLabel.text ),
+								true
+							);
 							const notice = at( 61 ), noticePath = ROOT + "interface/guild/gil_windo02_off.png";
 							authoredImage( notice, gx, gy, noticePath );
 							authoredText( at( 63 ), gx, gy, hudCopy( at( 63 ).text ) );
-							for ( const id of [ 121, 122, 123, 124, 126 ] ) {
+							for ( const id of grantPowerHud.isOpen() ? [] : [ 121, 122, 123, 124, 126 ] ) {
 								const node = at( id ),
 									caption = hudCopy(
 										id === 121 ?
@@ -15834,7 +16027,7 @@ export function createUi(
 							}
 							// 5E8850 creates empty 312x24 rows until six exist. Those native row
 							// textures are the backing; a bare scroll-manager rectangle is transparent.
-							for ( let i = 0; i < 6; i++ ) {
+							for ( let i = 0; !grantPowerHud.isOpen() && i < 6; i++ ) {
 								const path = ROOT + "interface/guild/gil_bar02_deselect.png";
 								paths.push( path );
 								if ( resources.has( path ) ) {
@@ -15872,6 +16065,13 @@ export function createUi(
 									s = at( 82 ),
 									slot = hudData.windows.ifguildmemberslot!;
 								socialPage = Math.min( socialPage, Math.max( 0, Math.ceil( rows.length / 6 ) - 1 ) );
+								// Register the empty region first so member/authority controls win hits.
+								controls.push( {
+									id: "guild-list",
+									label: hudCopy( "UIIT_STT_GUILD_INFO" ),
+									rect: authoredRect( s, gx, gy ),
+									kind: "region"
+								} );
 								if (
 									grantPowerHud.isOpen() && hudData.windows.ifguildgrantpower &&
 									hudData.windows.ifguildgrantpowerslot
@@ -15879,12 +16079,20 @@ export function createUi(
 									grantPanel(
 										hudData.windows.ifguildgrantpower,
 										hudData.windows.ifguildgrantpowerslot,
-										gx + at( 150 ).rect[0],
-										gy + at( 150 ).rect[1],
+										// ifguild/GrantPower control 150 is a separately created
+										// child, deliberately absent from the base page decoder.
+										gx + 14,
+										gy + 138,
 										self?.grade === 0
 									);
 								} else {rows.slice( socialPage * 6, socialPage * 6 + 6 ).forEach( ( row, i ) => {
 										const ox = gx + s.rect[0], oy = gy + s.rect[1] + i * 23;
+										if ( row.id === socialMember ) {
+											image(
+												[ ox, oy, 312, 24 ],
+												ROOT + "interface/guild/gil_bar02_select.png"
+											);
+										}
 										nativePage( slot, ox, oy, [ 9, 10 ] );
 										const roleSymbol = ({
 											1: "COMMANDER",
@@ -15970,12 +16178,6 @@ export function createUi(
 										if ( node.text ) authoredText( node, gx, gy, hudCopy( node.text ) );
 									}
 								}
-								controls.push( {
-									id: "guild-list",
-									label: hudCopy( "UIIT_STT_GUILD_INFO" ),
-									rect: authoredRect( s, gx, gy ),
-									kind: "region"
-								} );
 							}
 						}
 						endWindow( admission );
@@ -17606,8 +17808,64 @@ export function createUi(
 							) :
 							page,
 						mx,
-						my
+						my,
+						notice ? [ 2 ] : donate ? [ 610, 612, 613, 614, 615 ] : []
 					);
+					if ( notice ) {
+						const reminder = Object.values( page ).find( node => node.id === 2 )!;
+						authoredText(
+							reminder,
+							mx,
+							my,
+							noticeText( hudCopy, {
+								key: reminder.text,
+								value: 0,
+								arguments: [ String( socialContents.length ), "1023" ]
+							} ),
+							true
+						);
+					}
+					if ( guildDialog === "role" ) {
+						const roles = [
+							"SUBCOMMANDER",
+							"BATTLEMANAGER",
+							"PRODUCTMANAGER",
+							"TRAINERMANAGER",
+							"ENGINEER",
+							"POSITION_NOT"
+						];
+						quads.push(
+							...text.quads(
+								hudCopy( "UIIT_STT_GUILD_POSITION" ),
+								[ mx + 10, my + 12, width - 20, 14 ],
+								full,
+								white,
+								{ hAlign: 1 }
+							)
+						);
+						roles.forEach( ( role, index ) => {
+							const label = Object.values( page ).find( node => node.id === 712 + index )!;
+							authoredText( label, mx, my, hudCopy( "UIIT_STT_FORT_GUILD_" + role ), true );
+						} );
+					}
+					if ( donate ) {
+						for ( const id of [ 610, 612, 613, 614, 615 ] ) {
+							const node = Object.values( page ).find( node => node.id === id )!;
+							authoredText(
+								node,
+								mx,
+								my,
+								id === 610 ?
+									noticeText( hudCopy, {
+										key: node.text,
+										value: 0,
+										arguments: [ String( Number( socialAmount ) || 0 ) ]
+									} ) :
+									hudCopy( node.text ),
+								true
+							);
+						}
+					}
 					for ( const node of Object.values( page ) ) {
 						if ( node.type === "CIFEdit" ) {
 							partyEdit(
@@ -17674,9 +17932,21 @@ export function createUi(
 					}
 				} else {
 					const r: UiRect = [ mx + 28, my + 65, 252, 20 ];
+					// Inference: the native name-grant input uses shared message chrome;
+					// retain its title and an opaque edit field rather than an invisible hit box.
+					quads.push(
+						...text.quads(
+							hudCopy( "UIIT_CTL_GUILD_NAME_GRANT" ),
+							[ mx + 10, my + 12, width - 20, 14 ],
+							full,
+							white,
+							{ hAlign: 1 }
+						)
+					);
+					image( r, ROOT + "interface/messagebox/msgbox_blackbox.png" );
 					controls.push( {
 						id: "social-name",
-						label: hudCopy( "UIIT_CTL_GUILD_NAMEGRANT" ),
+						label: hudCopy( "UIIT_CTL_GUILD_NAME_GRANT" ),
 						rect: r,
 						kind: "text",
 						value: socialName,
@@ -18344,7 +18614,19 @@ export function createUi(
 						);
 					}
 				} else {
-					quads.push( ...text.quads( second, layout.question, full, white, { hAlign: 1 } ) );
+					// Inference: wrap manager explanations inside their message frame.
+					// The generic proposal's single text line let long English strings
+					// escape both sides of the dialog and cover the NPC menu behind it.
+					const body: UiRect = [ layout.frame[0] + 12, layout.question[1], layout.frame[2] - 24, 28 ];
+					textLines( second, body[2], value => text.run( value ).width ).slice( 0, 2 ).forEach(
+						( line, index ) =>
+							quads.push(
+								...text.quads( line, [ body[0], body[1] + index * 14, body[2], 14 ], body, white, {
+									hAlign: 1,
+									vAlign: 0
+								} )
+							)
+					);
 				}
 				button(
 					"guild-manager-yes",
