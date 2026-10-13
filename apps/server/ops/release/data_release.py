@@ -164,7 +164,8 @@ def main():
 	parser.add_argument("--ssh-target", required=True)
 	parser.add_argument("--identity", type=Path, required=True)
 	parser.add_argument("--coordinated", action="store_true", help="publish only together with a server candidate")
-	parser.add_argument("--maintenance", action="store_true", help="a coordinated pair for a maintenance window (implies --coordinated)")
+	parser.add_argument("--maintenance", action="store_true",
+		help="a coordinated pair for a maintenance window (implies --coordinated)")
 	parser.add_argument("--max-batch-mib", type=int, default=client_data.MAX_BATCH_BYTES >> 20,
 		help="split the payload into smaller uploads for a slow link")
 	parser.add_argument("--server-data", type=Path, help="also stage this server game-data archive (server.srogz)")
@@ -174,9 +175,12 @@ def main():
 	if arguments.package is None and not arguments.server_data:
 		parser.error("nothing to stage: give PACKAGE OUTPUT and/or --server-data")
 	if arguments.server_data:
-		upload = server_data_upload(arguments.server_data, arguments.output or arguments.server_data.parent)
-		print("server data", json.dumps(send(upload, arguments.ssh_target, arguments.identity), sort_keys=True),
-			flush=True)
+		# The client bundler owns OUTPUT and requires it to be fresh. Keep
+		# the server envelope private until send finishes, even on failure.
+		with tempfile.TemporaryDirectory(prefix="sro-server-data-") as directory:
+			upload = server_data_upload(arguments.server_data, Path(directory))
+			print("server data", json.dumps(send(upload, arguments.ssh_target, arguments.identity), sort_keys=True),
+				flush=True)
 		if arguments.package is None:
 			return
 	state = fetch_json(arguments.origin, "/releases/production.json")
@@ -198,7 +202,8 @@ def main():
 	print(f"{len(batches)} payload batches, {total / 1048576:.1f} MiB to send", flush=True)
 	for batch in batches:
 		print(batch.name, send(batch, arguments.ssh_target, arguments.identity), flush=True)
-	print(json.dumps(send(arguments.output / "candidate.tar", arguments.ssh_target, arguments.identity), sort_keys=True))
+	print(json.dumps(send(arguments.output / "candidate.tar", arguments.ssh_target, arguments.identity),
+		sort_keys=True))
 
 
 if __name__ == "__main__":
