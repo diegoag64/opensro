@@ -174,10 +174,14 @@ def main():
 		parser.error("PACKAGE and OUTPUT go together")
 	if arguments.package is None and not arguments.server_data:
 		parser.error("nothing to stage: give PACKAGE OUTPUT and/or --server-data")
+	# The client bundler requires a fresh OUTPUT; refuse before any upload so
+	# a run never stages the server data without its client candidate.
+	if arguments.package is not None and arguments.output.exists():
+		parser.error(f"{arguments.output} exists; the client candidate needs a fresh OUTPUT")
 	if arguments.server_data:
 		# The client bundler owns OUTPUT and requires it to be fresh. Keep
 		# the server envelope private until send finishes, even on failure.
-		with tempfile.TemporaryDirectory(prefix="sro-server-data-") as directory:
+		with tempfile.TemporaryDirectory(prefix="sro-server-data-", dir=arguments.server_data.parent) as directory:
 			upload = server_data_upload(arguments.server_data, Path(directory))
 			print("server data", json.dumps(send(upload, arguments.ssh_target, arguments.identity), sort_keys=True),
 				flush=True)

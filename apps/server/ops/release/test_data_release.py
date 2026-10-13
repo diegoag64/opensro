@@ -165,6 +165,7 @@ class StagingCLITests(unittest.TestCase):
 		if archive.name == "inventory-request.json":
 			return data_release.client_data.payload_inventory(self.config, json.loads(archive.read_bytes()))
 		if archive.name == "server-data.tar":
+			self.assertEqual(archive.parent.parent, self.archive.parent)
 			with tarfile.open(archive) as package:
 				self.assertEqual(package.getnames(),
 					[data_release.server_data.DECLARATION, data_release.server_data.ARCHIVE])
@@ -246,10 +247,13 @@ class StagingCLITests(unittest.TestCase):
 		self.output.mkdir()
 		sentinel = self.output / "keep.txt"
 		sentinel.write_bytes(b"keep")
-		with self.assertRaises(FileExistsError):
-			self.run_cli()
-		self.assertEqual([path.name for path in self.sent], ["server-data.tar", "inventory-request.json"])
-		self.assertFalse(self.sent[0].parent.exists())
+		for server in (True, False):
+			with self.subTest(server=server):
+				with self.assertRaises(SystemExit) as error:
+					self.run_cli(server=server)
+				self.assertEqual(error.exception.code, 2)
+		self.assertEqual(self.sent, [])
+		self.assertEqual(self.fetched, [])
 		self.assertEqual(list(self.output.iterdir()), [sentinel])
 		self.assertEqual(sentinel.read_bytes(), b"keep")
 
@@ -257,6 +261,8 @@ class StagingCLITests(unittest.TestCase):
 	# test_server_upload_failure_cleans_staging_and_stops_before_client
 	# ================
 	def test_server_upload_failure_cleans_staging_and_stops_before_client(self):
+		adjacent = self.root / "server-data.tar"
+		adjacent.write_bytes(b"keep")
 		self.fail_server = True
 		with self.assertRaisesRegex(RuntimeError, "server upload refused"):
 			self.run_cli()
@@ -264,6 +270,20 @@ class StagingCLITests(unittest.TestCase):
 		self.assertEqual([path.name for path in self.sent], ["server-data.tar"])
 		self.assertFalse(self.sent[0].parent.exists())
 		self.assertFalse(self.output.exists())
+		self.assertEqual(adjacent.read_bytes(), b"keep")
+
+	# ================
+	# test_server_packaging_failure_cleans_private_staging
+	# ================
+	def test_server_packaging_failure_cleans_private_staging(self):
+		self.archive.unlink()
+		before = sorted(self.root.iterdir())
+		with self.assertRaises(FileNotFoundError):
+			self.run_cli()
+		self.assertEqual(self.sent, [])
+		self.assertEqual(self.fetched, [])
+		self.assertFalse(self.output.exists())
+		self.assertEqual(sorted(self.root.iterdir()), before)
 
 
 if __name__ == "__main__":
