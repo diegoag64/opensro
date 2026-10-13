@@ -1970,6 +1970,47 @@ test("travel waits for presentation but a later incomplete travel gets a fresh n
 	assert.equal( world.status().error, "World connection timed out" );
 });
 
+/*
+================
+a fatal packet incident carries its frame journal
+
+B1 ("Unmatched COS transfer result") ended sessions with no evidence of the
+frames before it: the report now carries them, the failing frame last.
+================
+*/
+test("a fatal packet incident carries the frames before it", async t => {
+	const sockets = socketHarness( t ), incidents = [];
+	const world = createWorldSession( async () => "ticket", undefined, incident => incidents.push( incident ) );
+	t.after( () => world.dispose() );
+	world.enter( "fixture", "shard", "http://localhost:9000" );
+	await settle();
+	world.step( 1 );
+	const socket = sockets[0];
+	socket.onopen();
+	socket.receive( 2, welcome() );
+	world.step( 2 );
+	await settle();
+	world.step( 3 );
+	socket.receive( 7, entered() );
+	for ( const row of rows ) socket.receive( row.opcode, row.payload );
+	socket.receive( 0x32a6, Uint8Array.of( 123, 0, 0, 0, 0, 0, 0, 0 ) );
+	world.step( 4 );
+	flush( world );
+	world.step( 5 );
+	world.ready();
+	assert.equal( world.status().phase, "world" );
+	socket.receive( 0x3314, Uint8Array.of( 1, 2, 3 ) );
+	world.step( 6 );
+	assert.equal( incidents.length, 1 );
+	assert.equal( incidents[0].kind, "packet" );
+	const journal = incidents[0].journal;
+	assert.ok( journal && journal.length >= 8 && journal.length % 4 === 0, "rows of four numbers" );
+	// Sizes are on the wire: the 3-byte payload and its 2-byte opcode.
+	assert.deepEqual( journal.slice( -3 ), [ 0, 0x3314, 5 ], "the failing frame, inbound, comes last" );
+	assert.ok( journal.some( ( value, at ) => at % 4 === 2 && value === 7 ), "the EnterWorld result before it" );
+	for ( let at = 0; at < journal.length; at += 4 ) assert.ok( journal[at] <= 0 );
+});
+
 for ( const queuedReceipt of [ true, false ] ) {
 	test(`movement after a CPU stall: queued receipt ${queuedReceipt}`, async t => {
 		const sockets = socketHarness( t ), incidents = [];
@@ -2053,3 +2094,120 @@ for ( const queuedReceipt of [ true, false ] ) {
 		assert.equal( incidents.length, 1 );
 	});
 }
+
+/*
+================
+an unanswered inventory transaction resumes the session
+
+The transport keeps no frame already written to a dying socket, so an item
+request or its answer can be lost across a detach. Prod ended those sessions
+("Inventory transaction timed out (0xB06D move 17/20)", "(0xB5BD)") where a
+movement receipt in the same loss resumes. Both lanes now resume, and the
+fresh bootstrap retires the lost request without replaying it.
+================
+*/
+/*
+================
+lostAnswerWorld
+
+A world with a bag, entered on its first socket. enter( socket, at, resumed )
+admits a socket (the resume uses it again); incidents collects reports.
+================
+*/
+async function lostAnswerWorld( t ) {
+	const sockets = socketHarness( t ), incidents = [];
+	const world = createWorldSession( async () => "ticket", undefined, incident => incidents.push( incident ) );
+	t.after( () => world.dispose() );
+	const entry = {
+		...bootstrap,
+		inventorySlotCount: 45,
+		equipmentSlotCount: 13,
+		refItemSnapshot: [ { refObjId: 1, typeFlags: 0x6c, icon: "item/etc/hp_potion_01.ddj" } ],
+		equipItems: [ { slot: 13, refObjId: 1, body: [ 1, 0, 0, 0, 3, 0 ] } ]
+	};
+	/** @param {any} socket @param {number} at @param {boolean} resumed */
+	const enter = async ( socket, at, resumed ) => {
+		socket.onopen();
+		socket.receive( 2, welcome( resumed ) );
+		world.step( at );
+		await settle();
+		world.step( at + 1 );
+		socket.receive( 7, entered( entry ) );
+		for ( const row of rows ) socket.receive( row.opcode, row.payload );
+		socket.receive( 0x32a6, Uint8Array.of( 123, 0, 0, 0, 0, 0, 0, 0 ) );
+		world.step( at + 2 );
+		let batch;
+		while ( (batch = world.take()) ) world.ack( batch.sequence );
+		world.step( at + 3 );
+		world.ready();
+	};
+	world.enter( "fixture", "shard", "http://localhost:9000" );
+	await settle();
+	world.step( 1 );
+	await enter( sockets[0], 2, false );
+	assert.equal( world.status().phase, "world" );
+	return { world, sockets, incidents, enter };
+}
+
+test("an unanswered inventory transaction resumes the session without replaying it", async t => {
+	const { world, sockets, incidents, enter } = await lostAnswerWorld( t );
+	world.command( { kind: "inventory-move", source: 13, destination: 14, quantity: 1 } );
+	const sent = sockets[0].sent.at( -1 ).slice();
+	world.step( 10004 );
+	assert.equal( world.status().phase, "world", "the answer still has time" );
+	world.step( 10010 );
+	assert.equal( world.status().phase, "reconnecting", "a lost answer resumes, it does not disconnect" );
+	assert.equal( incidents.length, 1 );
+	assert.equal( incidents[0].code, "inventory_transaction_timeout" );
+	assert.equal( incidents[0].category, "unknown" );
+	assert.match( incidents[0].message, /Inventory transaction timed out \(0xB06D move 0\)/ );
+	world.step( 10260 );
+	await settle();
+	world.step( 10261 );
+	await enter( sockets[1], 10262, true );
+	assert.equal( world.status().phase, "world" );
+	assert.equal(
+		sockets[1].sent.some( packet => Buffer.from( packet ).equals( Buffer.from( sent ) ) ),
+		false,
+		"resume must never replay the timed-out request"
+	);
+	// The bootstrap retired the lost request: the bag takes a new one.
+	world.command( { kind: "inventory-move", source: 13, destination: 15, quantity: 1 } );
+	world.step( 12000 );
+	assert.equal( world.status().phase, "world" );
+	assert.equal( incidents.length, 1 );
+});
+
+/*
+================
+an unanswered mall request resumes the session
+
+The purchase lane's answer is an item result: a lost one resumes as an
+inventory transaction does, and the bootstrap's mall reset retires it.
+================
+*/
+test("an unanswered mall request resumes the session without replaying it", async t => {
+	const { world, sockets, incidents, enter } = await lostAnswerWorld( t );
+	world.command( { kind: "mall-open" } );
+	const sent = sockets[0].sent.at( -1 ).slice();
+	world.step( 10004 );
+	assert.equal( world.status().phase, "world", "the answer still has time" );
+	world.step( 10010 );
+	assert.equal( world.status().phase, "reconnecting", "a lost answer resumes, it does not disconnect" );
+	assert.equal( incidents.length, 1 );
+	assert.equal( incidents[0].code, "inventory_transaction_timeout" );
+	assert.match( incidents[0].message, /Mall request timed out/ );
+	world.step( 10260 );
+	await settle();
+	world.step( 10261 );
+	await enter( sockets[1], 10262, true );
+	assert.equal( world.status().phase, "world" );
+	assert.equal(
+		sockets[1].sent.some( packet => Buffer.from( packet ).equals( Buffer.from( sent ) ) ),
+		false,
+		"resume must never replay the timed-out request"
+	);
+	world.step( 30000 );
+	assert.equal( world.status().phase, "world", "the bootstrap retired the request" );
+	assert.equal( incidents.length, 1 );
+});
