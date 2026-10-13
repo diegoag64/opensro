@@ -165,7 +165,14 @@ export interface DeviceOwner extends Disposable {
 	readPortrait( id: string ): Promise<{ width: number; height: number; rgba: Uint8ClampedArray; }>;
 	uiTexture( id: string, image: UiTexture | null ): void;
 	ui( scene: UiScene | null ): readonly UiDraw[];
-	worldView( transform: Float32Array, environment: Float32Array, shadowEnabled?: boolean ): void;
+	// directional: light along the environment's sun direction this frame
+	// (the 3D viewer's studio light), whatever the Experimental stage says.
+	worldView(
+		transform: Float32Array,
+		environment: Float32Array,
+		shadowEnabled?: boolean,
+		directional?: boolean
+	): void;
 	sky(): ImageDraw | null;
 	thunder( color: readonly number[] ): ImageDraw;
 	flares( input: FlareInput, depth: GPUTextureView ): FlareDraw;
@@ -408,6 +415,9 @@ export interface GeometryCommands {
 	// Writes a packed vertex stream (14 floats a vertex) at vertex base of a
 	// dynamicVertices draw: a terrain layer member taking its slot.
 	writeVertices( draw: GeometryDraw, base: number, vertices: Float32Array ): void;
+	// Writes a packed vertex stream at vertex base of any draw, keeping no CPU
+	// copy: the caller owns the stream (a terrain layer member's vertices).
+	streamVertices( draw: GeometryDraw, base: number, vertices: Float32Array ): void;
 	updateInstances(
 		draw: GeometryDraw,
 		instances: Float32Array,

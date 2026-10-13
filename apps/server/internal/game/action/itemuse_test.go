@@ -126,7 +126,7 @@ func TestHandleItemUseConsumesPotionRecoversHPAndAnswersNativeBurst(t *testing.T
 	rt, _ := newTestRuntime(character, testItems())
 
 	result := rt.HandleItemUse(testDivision, character, []byte{21, 0xEC, 0x08})
-	assertOpcodes(t, result.Frames, wire.OpItemUseResponse, wire.OpItemUseVisual, simulation.OpVitalsUpdate)
+	assertOpcodes(t, result.Frames, wire.OpItemUseResponse, opCommerceItemReferences, wire.OpItemUseVisual, simulation.OpVitalsUpdate)
 	if got, want := result.Frames[0].Payload,
 		wire.EncodeItemUseSuccess(21, 1, 0x08EC); !reflect.DeepEqual(got, want) {
 		t.Fatalf("0xB5BD = % X, want % X", got, want)
@@ -161,7 +161,7 @@ func TestHandleItemUseLastPotionRemovesRow(t *testing.T) {
 	rt, _ := newTestRuntime(character, testItems())
 
 	result := rt.HandleItemUse(testDivision, character, []byte{21, 0xEC, 0x08})
-	assertOpcodes(t, result.Frames, wire.OpItemUseResponse, wire.OpItemUseVisual, simulation.OpVitalsUpdate)
+	assertOpcodes(t, result.Frames, wire.OpItemUseResponse, opCommerceItemReferences, wire.OpItemUseVisual, simulation.OpVitalsUpdate)
 	if got := result.Frames[0].Payload; !reflect.DeepEqual(
 		got,
 		wire.EncodeItemUseSuccess(21, 0, 0x08EC),
@@ -235,6 +235,7 @@ func TestHandleItemUseCreatesAuthoritativeCosBeforeSpawn(t *testing.T) {
 	result := rt.HandleItemUse(testDivision, character, []byte{22, 0xEC, 0x11})
 	assertOpcodes(t, result.Frames,
 		wire.OpItemUseResponse,
+		opCommerceItemReferences,
 		wire.OpItemUseVisual,
 		wire.OpCosRecordCreate,
 		wire.OpSingleObjectSpawn,
@@ -247,7 +248,7 @@ func TestHandleItemUseCreatesAuthoritativeCosBeforeSpawn(t *testing.T) {
 		character.ActiveCOS.RefObjID != 3914 || !character.ActiveCOS.Summoned || !character.ActiveCOS.Mounted {
 		t.Fatalf("active COS = %+v", character.ActiveCOS)
 	}
-	if got := binary.LittleEndian.Uint32(result.Frames[2].Payload[0:4]); got != character.ActiveCOS.GID {
+	if got := binary.LittleEndian.Uint32(result.Frames[3].Payload[0:4]); got != character.ActiveCOS.GID {
 		t.Fatalf("3158 gid = 0x%X, want 0x%X", got, character.ActiveCOS.GID)
 	}
 	for _, row := range character.MissionInventory {
@@ -396,12 +397,17 @@ func petSkillSource() cosTestItemSource {
 		TypeIDs:      [4]int64{3, 3, 13, 15},
 		NativeFields: enterworld.NewNativeFields(map[string]float64{"itemParam1_29c": 1800, "canUse": 129}),
 	}
+	source.characters["COS_P_WOLF_001"] = &enterworld.CharacterRef{RefObjID: 6106, TidWord: petWolfTid,
+		Codename: "COS_P_WOLF_001", Level: 1, MaxHP: 400}
 	return source
 }
 
 /*
 ================
 TestPetSkillItemRaisesTheKind3WindowOnlyWithALivePet
+
+"Can only be used on growth pets": a horse is refused, and a summoned
+growth pet is found on its summoner row, where it lives (not ActiveCOS).
 ================
 */
 func TestPetSkillItemRaisesTheKind3WindowOnlyWithALivePet(t *testing.T) {
@@ -414,16 +420,34 @@ func TestPetSkillItemRaisesTheKind3WindowOnlyWithALivePet(t *testing.T) {
 
 	typeWord := wire.PackTypeFlags(3, 3, 13, 15)
 	body := []byte{24, byte(typeWord), byte(typeWord >> 8)}
-	// A pet skill needs the pet it applies to.
-	for _, frame := range rt.HandleItemUse(testDivision, character, body).Frames {
-		if frame.Opcode == wire.OpCosStateRefresh {
-			t.Fatal("a pet skill raised a window without a live COS")
+	raisesWindow := func() bool {
+		for _, frame := range rt.HandleItemUse(testDivision, character, body).Frames {
+			if frame.Opcode == wire.OpCosStateRefresh {
+				return true
+			}
 		}
+		return false
 	}
-
+	// A pet skill needs the pet it applies to.
+	if raisesWindow() {
+		t.Fatal("a pet skill raised a window without a live COS")
+	}
 	character.ActiveCOS = &enterworld.CharacterCOS{
 		GID: 0x00C00003, RefObjID: 3914, Codename: "COS_T_DHORSE3", CurrentHP: 1, Summoned: true,
 	}
+	if raisesWindow() {
+		t.Fatal("a pet skill raised a window for a horse")
+	}
+
+	character.MissionInventory = append(character.MissionInventory, enterworld.InventoryRow{
+		Slot: 25, RefObjID: 9001, Codename: "ITEM_COS_P_WOLF", StackCount: 1,
+		Summon: &enterworld.CharacterCOS{GID: 0x00C00004, RefObjID: 6106, Codename: "COS_P_WOLF_001", Level: 1,
+			CurrentHP: 0, Summoned: true},
+	})
+	if raisesWindow() {
+		t.Fatal("a pet skill raised a window for a dead growth pet")
+	}
+	character.MissionInventory[len(character.MissionInventory)-1].Summon.CurrentHP = 120
 	result := rt.HandleItemUse(testDivision, character, body)
 	var window []byte
 	for _, frame := range result.Frames {

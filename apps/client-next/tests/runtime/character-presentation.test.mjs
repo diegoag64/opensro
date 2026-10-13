@@ -35,12 +35,18 @@ const identity = () => new Float32Array( [ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0
 model
 
 A minimal decoded character source; positionFloats sizes its geometry so a
-test can charge the residency byte budget.
+test can charge the residency byte budget. It carries Bip01 Neck and
+Bip01 Neck1, the wearer sockets shoulder garments' private branches link
+under.
 ================
 */
 function model( positionFloats = 9 ) {
 	return {
-		nodes: [ { name: "root", parent: -1, translation: [ 0, 0, 0 ], rotation: [ 0, 0, 0, 1 ], scale: [ 1, 1, 1 ] } ],
+		nodes: [
+			{ name: "root", parent: -1, translation: [ 0, 0, 0 ], rotation: [ 0, 0, 0, 1 ], scale: [ 1, 1, 1 ] },
+			{ name: "Bip01 Neck", parent: 0, translation: [ 0, 140, 0 ], rotation: [ 0, 0, 0, 1 ], scale: [ 1, 1, 1 ] },
+			{ name: "Bip01 Neck1", parent: 1, translation: [ 0, 10, 0 ], rotation: [ 0, 0, 0, 1 ], scale: [ 1, 1, 1 ] }
+		],
 		clips: [ "stand", "walk", "run", "pick", "death" ].map( name => ({ name, duration: 1, channels: [] }) ),
 		images: [],
 		primitives: [ {
@@ -993,6 +999,178 @@ for ( const local of [ false, true ] ) {
 		});
 	}
 }
+
+test("a WAIT hold released by the next walk recovers continuously instead of jumping", () => {
+	// actor-motion holds the drawn pose when a cast's WAIT leaves the walk
+	// state (native stops the walk there); the logical walk can still move
+	// on. The next revision released the hold in one frame, and on a slope
+	// that step read as the camera height snapping (owner, F4).
+	const f = fixture(
+		{ 7: { clips: [ "stand" ], phaseClips: [ [], [ "stand" ], [] ], stages: [] } },
+		2,
+		false,
+		false,
+		false,
+		false,
+		false,
+		false,
+		false,
+		false,
+		undefined,
+		{ states: { stand: { durationMs: 1000, loop: true, trackEvents: [] } }, rules: [] }
+	);
+	f.warm();
+	f.presentation.simulationOrigin( 0 );
+	const from = { regionId: 1, x: 10, y: 20, z: 30, angle: 16384 };
+	const to = { ...from, x: 110 };
+	// The walk after the release: 100 units in 2 s.
+	const NEXT_SPEED = 50;
+	const cast = { token: 1, caster: 1, target: 0, skill: 7, damage: 0, fatal: false };
+	let travelling = true;
+	const frame = ( x, seconds, casting, moving ) => {
+		const path = {
+			from: travelling ? from : { ...to, x },
+			to: travelling ? to : { ...to, x: 210 },
+			durationMs: travelling ? 200 : (210 - x) / NEXT_SPEED * 1000
+		};
+		const player = entity( 1, {
+			kind: "local-player",
+			x,
+			moving,
+			movementMode: 3,
+			movementRevision: travelling ? 1 : 2,
+			movementPath: moving ? path : undefined,
+			poseAtMs: seconds * 1000
+		} );
+		f.step( [ player ], seconds, {
+			localGid: 1,
+			pose: { ...from, x },
+			moving,
+			movementRevision: travelling ? 1 : 2,
+			movementPath: moving ? path : undefined,
+			poseAtMs: seconds * 1000,
+			inventory: [],
+			vitals: [],
+			casts: casting ? [ { ...cast, token: 1 } ] : []
+		} );
+		assert.equal( f.presentation.error(), null );
+		return { ...f.actors.find( actor => actor.gid === 1 ).pose };
+	};
+	frame( 10, 1, false, true );
+	const held = frame( 20, 1.02, true, true );
+	frame( 60, 1.1, true, true );
+	frame( 110, 1.3, false, false );
+	assert.equal( frame( 110, 3, false, false ).x, held.x, "the WAIT hold stands until the next walk" );
+	travelling = false;
+	let previous = held, at = 3, steady = 0;
+	for ( let step = 1; step <= 300; step++ ) {
+		const seconds = 3 + step / 60, x = 110 + (seconds - 3) * NEXT_SPEED;
+		const shown = frame( x, seconds, false, true );
+		const budget = 1.5 * NEXT_SPEED * (seconds - at) + 1e-6;
+		assert.ok(
+			Math.abs( shown.x - previous.x ) <= budget,
+			`release step ${(shown.x - previous.x).toFixed( 2 )} > ${budget.toFixed( 2 )} at ${seconds.toFixed( 3 )} s`
+		);
+		if ( step > 270 ) {
+			steady = Math.max( steady, Math.abs( shown.x - previous.x - NEXT_SPEED * (seconds - at) ) );
+		}
+		previous = shown;
+		at = seconds;
+	}
+	// Recovered: the last half second walks at exactly the walk's speed, at
+	// the fixture's own presentation lag behind the logical walk (3.75 units,
+	// the same without any hold).
+	assert.ok( steady < 1e-6, `walks at the walk's speed after recovery (${steady})` );
+	const logical = 110 + 5 * NEXT_SPEED;
+	assert.ok(
+		logical - previous.x >= 0 && logical - previous.x < 4,
+		`converges to the walk (${previous.x} vs ${logical})`
+	);
+	f.dispose();
+});
+
+test("a WAIT hold released while standing decays instead of jumping", () => {
+	// The hold released by a revision with no walk to pace it (a correction
+	// or a receipt while standing): the carried pose decays as a correction.
+	// actor-motion holds the drawn pose when a cast's WAIT leaves the walk
+	// state (native stops the walk there); the logical walk can still move
+	// on. The next revision released the hold in one frame, and on a slope
+	// that step read as the camera height snapping (owner, F4).
+	const f = fixture(
+		{ 7: { clips: [ "stand" ], phaseClips: [ [], [ "stand" ], [] ], stages: [] } },
+		2,
+		false,
+		false,
+		false,
+		false,
+		false,
+		false,
+		false,
+		false,
+		undefined,
+		{ states: { stand: { durationMs: 1000, loop: true, trackEvents: [] } }, rules: [] }
+	);
+	f.warm();
+	f.presentation.simulationOrigin( 0 );
+	const from = { regionId: 1, x: 10, y: 20, z: 30, angle: 16384 };
+	const to = { ...from, x: 110 };
+	// The walk after the release: 100 units in 2 s.
+	const NEXT_SPEED = 50;
+	const cast = { token: 1, caster: 1, target: 0, skill: 7, damage: 0, fatal: false };
+	let travelling = true;
+	const frame = ( x, seconds, casting, moving ) => {
+		const path = {
+			from: travelling ? from : { ...to, x },
+			to: travelling ? to : { ...to, x: 210 },
+			durationMs: travelling ? 200 : (210 - x) / NEXT_SPEED * 1000
+		};
+		const player = entity( 1, {
+			kind: "local-player",
+			x,
+			moving,
+			movementMode: 3,
+			movementRevision: travelling ? 1 : 2,
+			movementPath: moving ? path : undefined,
+			poseAtMs: seconds * 1000
+		} );
+		f.step( [ player ], seconds, {
+			localGid: 1,
+			pose: { ...from, x },
+			moving,
+			movementRevision: travelling ? 1 : 2,
+			movementPath: moving ? path : undefined,
+			poseAtMs: seconds * 1000,
+			inventory: [],
+			vitals: [],
+			casts: casting ? [ { ...cast, token: 1 } ] : []
+		} );
+		assert.equal( f.presentation.error(), null );
+		return { ...f.actors.find( actor => actor.gid === 1 ).pose };
+	};
+	frame( 10, 1, false, true );
+	const held = frame( 20, 1.02, true, true );
+	frame( 60, 1.1, true, true );
+	frame( 110, 1.3, false, false );
+	assert.equal( frame( 110, 3, false, false ).x, held.x, "the WAIT hold stands until the next walk" );
+	travelling = false;
+	// CORRECTION_FREQUENCY (30/s) over a 60 fps frame: the most one frame closes.
+	const perFrame = 1 - Math.exp( -30 / 60 );
+	let previous = held, gap = 110 - held.x;
+	for ( let step = 1; step <= 30; step++ ) {
+		const shown = frame( 110, 3 + step / 60, false, false );
+		const closed = shown.x - previous.x;
+		assert.ok( closed >= -1e-9, `no step back at frame ${step}` );
+		// The last hundredth of a unit (MIN_CORRECTION_DISTANCE) is closed at once.
+		assert.ok(
+			closed <= perFrame * gap + 0.01,
+			`frame ${step} closes ${closed.toFixed( 2 )} of ${gap.toFixed( 2 )}`
+		);
+		gap = 110 - shown.x;
+		previous = shown;
+	}
+	assert.ok( Math.abs( previous.x - 110 ) < 0.01, `settles on the standing pose (${previous.x})` );
+	f.dispose();
+});
 
 test("gecko starts the walk immediately, fades out over 200ms at its end and resets behind the dock gate", () => {
 	const f = fixture();
@@ -2797,6 +2975,90 @@ test("mounting hides native weapon and shield visuals and dismount restores both
 	assert.equal( f.presentation.error(), null );
 	assert.equal( f.assemblies.at( -1 ).parts.length, 2 );
 	f.dispose();
+});
+
+/*
+================
+EU shoulder garments animate their crystals
+
+The 18 EU shoulder garments link their own skeleton under Bip01 Neck and
+play clothes_sa.ban (#730). The worn item is a private-skeleton child that
+keeps running its track, and its ambient glow rides that child's bones.
+================
+*/
+test("a worn EU shoulder garment is its own animated handle carrying its crystal glow", () => {
+	const roster = JSON.parse( readFileSync( path.join( publicRoot, "assets/char/roster.json" ), "utf8" ) );
+	const items = JSON.parse( readFileSync( path.join( publicRoot, "assets/data/missionPresentation.json" ), "utf8" ) )
+		.itemsByRefObjId;
+	for ( const prefix of [ "EU_M", "EU_W" ] ) {
+		const [race, sex] = prefix.split( "_" ),
+			appearance = {
+				items,
+				roster: {
+					models: [ {
+						refObjId: 1,
+						codename: `CHAR_${race}_${sex === "M" ? "MAN" : "WOMAN"}_TEST`,
+						glb: "/assets/1.glb",
+						clips: [ "stand", "walk", "run" ]
+					} ],
+					dress: roster.dress
+				}
+			};
+		const f = fixture(
+			{},
+			2,
+			false,
+			false,
+			false,
+			false,
+			false,
+			false,
+			false,
+			false,
+			undefined,
+			undefined,
+			undefined,
+			{},
+			{ appearance }
+		);
+		const id = Number(
+			Object.entries( roster.dress.equipment ).find( ( [, r] ) =>
+				r.slot === 2 && r.bodies[prefix]?.auxiliary && r.code.includes( "_CLOTHES_01_SA_" )
+			)?.[0]
+		);
+		assert.ok( id, prefix );
+		const shoulder = roster.dress.equipment[id].bodies[prefix].auxiliary;
+		let now = 0;
+		const step = () => {
+			for ( let i = 0; i < 30; i++ ) {
+				f.presentation.step(
+					[ entity( 1, { kind: "player", equipment: [ { slot: 2, refObjId: id } ] } ) ],
+					null,
+					now += .01
+				);
+			}
+		};
+		step();
+		assert.equal( f.presentation.error(), null );
+		const child = f.actors.find( a => a.model === shoulder.glb );
+		assert.ok( child, "the garment is drawn as its own handle" );
+		assert.deepEqual( [ child.attachment.gid, child.attachment.bone, child.attachment.basis, child.clip ], [
+			1,
+			"Bip01 Neck",
+			"compound",
+			"stand"
+		] );
+		const glow = f.actors.filter( a => a.attachment?.gid === child.gid && a.model.includes( "programs.json#" ) );
+		assert.deepEqual(
+			glow.map( a => a.attachment.bone ).sort(),
+			shoulder.particleModifiers.flatMap( m => m.entries ).map( e => e.boneName ).sort(),
+			"the glow rides the crystal bones of the animated handle"
+		);
+		step();
+		const later = f.actors.find( a => a.gid === child.gid );
+		assert.ok( later.time > child.time, "the crystals keep turning" );
+		f.dispose();
+	}
 });
 
 test("auxiliary avatar wings keep independent tracks and retire across cold replacement, masking, unequip, despawn and reset", () => {

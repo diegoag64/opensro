@@ -56,7 +56,9 @@ test("a pet pickup the party hands to another member ends at the pet's scoop", (
 	const other = fixture().owner;
 	other.command( { kind: "cos-pickup", gid: 7, target: 123 }, 0, entity );
 	other.receive( { opcode: 0x35c7, payload: Uint8Array.from( [ ...u32( 1 ), 64 ] ) }, 1 );
-	assert.throws( () => other.step( 10002 ), /reconnect/ );
+	// A pet pickup waits out the pet's approach (COS_PICKUP_ANSWER_MS).
+	assert.doesNotThrow( () => other.step( 10002 ) );
+	assert.throws( () => other.step( 15002 ), /reconnect/ );
 });
 test("a pet pickup's receipt still applies after an earlier scoop ended its request", () => {
 	// The pet's in-flight automatic scoop arrives first and ends the manual
@@ -222,10 +224,14 @@ test("failed or timed out transfers cannot consume items or cross the inventory 
 	assert.equal( state.inventoryPending, false );
 	const f = owner.command( { kind: "cos-transfer", gid: 7, toCos: false, source: 0, destination: 13 }, 2, entity );
 	assert.throws( () => owner.step( 10002 ), /reconnect/ );
-	assert.throws(
-		() => owner.receive( { opcode: 0xb06d, payload: Uint8Array.from( [ 1, ...f.payload ] ) }, 10003 ),
-		/reconnect/
-	);
+	// A late answer after the timeout is set aside until the resynchronizing
+	// bootstrap: it never moves the item out of the pet (inventory.ts
+	// cosTransferred), and the timeout still stands.
+	owner.receive( { opcode: 0xb06d, payload: Uint8Array.from( [ 1, ...f.payload ] ) }, 10003 );
+	state = owner.take();
+	assert.deepEqual( state.inventory, [] );
+	assert.equal( state.cosRecords[0].inventory[0].quantity, 30 );
+	assert.throws( () => owner.step( 10004 ), /reconnect/ );
 });
 
 for (

@@ -168,12 +168,15 @@ func TestPrivilegedUnhonoredCommandsRefuseWithResult2(t *testing.T) {
 		name  string
 		frame []byte
 	}{
-		{"/GOTOWN", []byte{0x02}},
-		{"/WORLDSTATUS", []byte{0x04}},
-		{"/BAN", nameFrame(0x0D, "Remo")},
+		{"/GOTOWN without an owner", []byte{0x02}},
+		{"/TOTOWN without an owner", nameFrame(0x03, "Remo")},
+		{"/MOVETOUSER without an owner", nameFrame(0x08, "Remo")},
+		{"/RECALLUSER without an owner", nameFrame(0x11, "Remo")},
+		{"/WORLDSTATUS without an owner", []byte{0x04}},
+		{"/BAN without a session directory", nameFrame(0x0D, "Remo")},
 		{"/INVISIBLE", []byte{0x0E}},
 		{"/INVINCIBLE", []byte{0x0F}},
-		{"/SETTIME", []byte{0x0A, 0x0D}},
+		{"/SETTIME without an owner", []byte{0x0A, 0x0D}},
 		{"/LOADMONSTER", []byte{0x06, 0x34, 0x12, 0x00, 0x00, 0x03, 0x01}},
 	}
 	for _, tc := range cases {

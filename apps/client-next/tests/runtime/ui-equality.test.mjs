@@ -76,6 +76,7 @@ test("focus, caret, controls and loading changes remain observable even when pix
 			{ loadingStatus: "upload" },
 			{ loadingError: "failed" },
 			{ hudCorner: [ 1, 2, 3, 4 ] },
+			{ hudToolsTop: 80 },
 			{ focusRequest: { id: "chat", revision: 2, caret: 0 } },
 			{ focusRequest: { id: "chat", revision: 1, caret: 1 } }
 		]
@@ -107,4 +108,9 @@ test("a doll quad whose camera moved is a new quad (the 3D viewer's zoom)", () =
 	assert.equal( sameUiQuads( [ doll ], [ closer ] ), false );
 	const plain = { ...quad(), doll: { gid: 1, yaw: 0 } };
 	assert.equal( sameUiQuads( [ doll ], [ plain ] ), false );
+});
+
+test("a doll quad that gains the viewer's ride is a new quad", () => {
+	const plain = { ...quad(), doll: { gid: 1, yaw: 0 } };
+	assert.equal( sameUiQuads( [ plain ], [ { ...plain, doll: { gid: 1, yaw: 0, mount: true } } ] ), false );
 });

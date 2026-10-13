@@ -15,6 +15,7 @@ import { uiFixture, fontAtlas } from "../helpers/ui-fixture.mjs";
 import { defined } from "../helpers/defined.mjs";
 const { emptySocial } = await import( "../../src/engine/foundation/gameplay/social.ts" );
 const { topmostControlAt } = await import( "../../src/engine/foundation/ui/hit-test.ts" );
+const { panelCloseId } = await import( "../../src/engine/foundation/ui/panels.ts" );
 
 /*
 ================
@@ -187,7 +188,7 @@ for ( const [width, height] of [ [ 375, 667 ], [ 667, 375 ] ] ) {
 				!output.controls.some( control => control.id === "guild-tab:0" ),
 				"Blocking retains its existing separate route"
 			);
-			fixture.ui.event( { kind: "activate", id: "close" } );
+			fixture.ui.event( { kind: "activate", id: panelCloseId( "Blocking" ) } );
 			draw();
 			fixture.state.width = 1600;
 			fixture.state.height = 900;
@@ -281,3 +282,42 @@ for ( const [width, height] of [ [ 375, 667 ], [ 667, 375 ] ] ) {
 		}
 	});
 }
+
+test("a guild master outside any party can donate and open the authority panel without an error", () => {
+	const fixture = uiFixture();
+	let time = 0, published;
+	/*
+	================
+	draw
+	================
+	*/
+	function draw() {
+		published = fixture.ui.step( fixture.state, ++time * 100 ) ?? published;
+		assert.equal( fixture.ui.stats().error, null, "Guild draw must not fail" );
+		return defined( published );
+	}
+	try {
+		// social.self is the party id: 0 when the master is in no party.
+		Object.assign( fixture.state.gameplay, { social: { ...guildState(), self: 0 } } );
+		fixture.state.width = 1600;
+		fixture.state.height = 900;
+		draw();
+		// The first world frame shows the Item Mall notice; it is modal.
+		fixture.ui.event( { kind: "activate", id: "mall-notice-close" } );
+		draw();
+		fixture.ui.event( { kind: "activate", id: "open-window:Guild" } );
+		draw();
+		fixture.ui.event( { kind: "activate", id: "guild-tab:0" } );
+		let output = draw();
+		for ( const id of [ "guild-dialog:donate", "guild-dialog:title", "guild-dialog:role" ] ) {
+			assert.equal( output.controls.find( control => control.id === id )?.disabled, false, id );
+		}
+		// The desktop page read control 150, which its decoder omits, and
+		// threw "reading 'rect'" here; draw() asserts the UI kept no error.
+		fixture.ui.event( { kind: "activate", id: "guild-dialog:authority" } );
+		draw();
+		draw();
+	} finally {
+		fixture.dispose();
+	}
+});

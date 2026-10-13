@@ -656,6 +656,9 @@ func (rt *Runtime) settlePlayerDeathInDoor(division string, c *enterworld.Charac
 		c.World.LastDeathPoint = point
 	}
 	effects = rt.retireBodyEffectsOnDeath(division, c)
+	// CGObjPC_ClearJobStateOnDeath (51B5DB) writes the interaction state 0:
+	// an open warehouse ends with its user's death.
+	rt.endStorageInteraction(division, c.Name)
 	// 529B10: the ridden vehicle is released with its rider's death.
 	released, owned := rt.releaseRiddenVehicleInDoor(division, c, now)
 	effects = append(effects, released...)
@@ -673,7 +676,10 @@ func (rt *Runtime) settlePlayerDeathInDoor(division string, c *enterworld.Charac
 		frames, _ := rt.ReleaseQuestCapturesOnDeath(c)
 		progression = append(progression, frames...)
 	}
-	return effects, append(progression, owned...)
+	// 529D6D: the death ends with the victim's private notice of its kind,
+	// which labels the death box's rebirth button (wire/deathnotice.go).
+	progression = append(progression, owned...)
+	return effects, append(progression, wire.DeathNoticeFrame(rt.deathNoticeKind(c.DeathKind)))
 }
 
 /*

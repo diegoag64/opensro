@@ -57,7 +57,19 @@ const ENDPOINT_EPSILON = .01;
 const PRESENTATION_LOOKAHEAD_MS = 100;
 const NAVIGATION_STOP = 1;
 const NAVIGATION_REJECT = 0x10000000;
+// A skill run-up's server goal lies within this heading of the predicted
+// one, seen from the predicted start (sameApproachWalk).
+const APPROACH_HEADING_TOLERANCE = Math.PI / 8;
 const MOVEMENT_RECEIPT_TIMEOUT_MS = 10000;
+// What reconcile does when the walk to a server position is blocked
+// (86D9D0's fourth argument): keep the nav cell, or find it at the point.
+const KEEP_CELL = "keep-cell";
+const RESOLVE_CELL = "resolve-cell";
+// A walk kept across a stop at its start (correctsWalkStart) waits this long
+// past one measured round trip for its receipt, then walks back to the stop.
+const KEPT_WALK_GRACE_MS = 250;
+// The round trip assumed before any receipt measured one.
+const DEFAULT_ROUND_TRIP_MS = 500;
 
 // Opcode of the replacement client's predicted-movement envelope
 // (transport.OpPredictedMove): [u8 1|2][u32 id] then the native body.
@@ -219,7 +231,9 @@ export function createMovement(
 	let life: "alive" | "dead" = "alive";
 	// A server-driven walk started locally before its acknowledgement (a
 	// pickup run-up): where it leaves from and the goal the server will walk.
-	let predicted: { from: Pose; to: Pose; } | null = null;
+	// approach: a skill press's run-up, whose goal the server derives from
+	// combat spacing and navigation (sameApproachWalk); since: its start.
+	let predicted: { from: Pose; to: Pose; approach: boolean; since: number; } | null = null;
 	// A walk stopped where a cast command left it (holdForCast): the held
 	// pose, when the hold lapses, and the server walk to follow if it does.
 	let castHold: {
@@ -230,11 +244,20 @@ export function createMovement(
 	} | null = null;
 	let reanchorReports = 0;
 	const recentReanchors: { revision: number; source: string; distance: number; before: Pose; after: Pose; }[] = [];
+	// from: where the walk left when it was sent; previous: the goal of the
+	// walk before it (correctsWalkStart keeps a walk the server will start
+	// from the same point).
 	const pending = new Map<number, {
 		to: Pose;
+		from: Pose;
+		previous?: Pose;
 		sent: number;
 		direction?: number;
 	}>();
+	// The goal of the last walk requested, the latest measured round trip,
+	// and a walk correctsWalkStart kept while its receipt is outstanding.
+	let lastGoal: Pose | undefined, roundTripMs = DEFAULT_ROUND_TRIP_MS;
+	let keptWalk: { id: number; since: number; } | null = null;
 	/*
 ================
 beginTransition
@@ -311,11 +334,66 @@ units, so compare within one unit on the same region.
 	}
 	/*
 ================
-reconcile
+correctsWalkStart
+
+Whether a correction is the previous walk's arrival crossing the latest
+pending request: it lands where that request's client-led walk left from,
+and that start is the previous walk's goal (the client had arrived and
+clicked on). The server answers in order, so it sent the stop before it
+read the request, and it walks the request from there. Any other stop at
+the start (a root, a stun, a refusal) is not kept, and a kept walk whose
+receipt does not come walks back (step, KEPT_WALK_GRACE_MS). A predicted
+run-up is not kept: a settle at its start may be the server casting in
+place. Restarting the walk from
+the correction threw the progress away: a 27-unit snap back, after which a
+skill press held the caster behind the server and the cast's settle jumped
+it 30 units forward (report BR-261010-2006-9E09).
 ================
 	*/
-	function reconcile( from: Pose ): Pose {
-		if ( pose && owner ) {
+	function correctsWalkStart( to: Pose ): boolean {
+		if ( !segment || segment.lead !== "client" || segment.fixedTiming || walk ) return false;
+		const latest = pending.get( nextId );
+		return !!latest && latest.direction === undefined && !predicted && !!latest.previous &&
+			samePredictedGoal( latest.from, to ) && samePredictedGoal( latest.previous, to );
+	}
+	/*
+================
+sameApproachWalk
+
+A skill run-up's server walk cannot repeat the predicted goal: the server
+stops at its combat spacing (the authored range plus both bodies) after
+navigation admission. Its acknowledgement seldom carries a source (only a
+mover's first walk does), so the walk is recognised by its goal: on the
+predicted start's region, along the predicted heading from that start.
+================
+	*/
+	function sameApproachWalk( predicted: { from: Pose; to: Pose; }, to: Pose | undefined ): boolean {
+		if ( !to || to.regionId !== predicted.from.regionId ) return false;
+		const server = Math.atan2( to.z - predicted.from.z, to.x - predicted.from.x ),
+			client = Math.atan2( predicted.to.z - predicted.from.z, predicted.to.x - predicted.from.x );
+		return Math.abs( Math.atan2( Math.sin( server - client ), Math.cos( server - client ) ) ) <=
+			APPROACH_HEADING_TOLERANCE;
+	}
+	/*
+================
+reconcile
+
+A server position, taken as native CNavigationController_ReseedSourcePosition
+(86D9D0) takes it: walk from the current nav cell to it (IRegionManager
++0x30), and a walk that reaches it keeps the cell's surface, whatever Y the
+wire carried. When the walk is blocked the two callers part (86D9D0's
+fourth argument): a movement answer (B738, KEEP_CELL) keeps the cell and
+the position it has; a server correction (B2F5, 30E3, RESOLVE_CELL) finds
+the cell at the corrected point (+0x2c, nearest by |deltaY|), which its
+exact float Y makes safe. A movement answer's destination Y is int16, so
+re-guessing the surface from it dropped a walker off a bridge or deck.
+A correction walks only from an owned cell: without one the pose may be
+the entity table's stale terrain (Lord's arena), and the correction's own
+float Y is the better witness.
+================
+	*/
+	function reconcile( from: Pose, blocked: "keep-cell" | "resolve-cell" ): Pose {
+		if ( pose && (owner || blocked === KEEP_CELL) ) {
 			const query: { slide: boolean; sourceOwner?: NavOwner; owner?: NavOwner; } = {
 				slide: false,
 				sourceOwner: owner
@@ -325,6 +403,9 @@ reconcile
 				owner = query.owner;
 				return { ...from, y: resolved.y };
 			}
+			// A walk that stopped short is blocked; no answer (navigation not
+			// loaded there) is no evidence, and the server's point stands.
+			if ( resolved && blocked === KEEP_CELL ) return pose;
 		}
 		owner = undefined;
 		return navigation.surface( from );
@@ -485,6 +566,30 @@ CATCHUP_SPEED_FACTOR, so it reads as walking and not as a slide or a jump.
 				duration: refused ? movementDuration( remaining, speed ) : Math.max( arrival - now, fastest )
 			} ) :
 			null;
+	}
+	/*
+================
+endPrediction
+
+The server refused the walk it was predicted to drive, or cast without
+it: it never left the start, so walk back there.
+================
+	*/
+	function endPrediction( now: number ) {
+		if ( !predicted || !pose ) return;
+		advanceTo( now );
+		const from = predicted.from, current = pose;
+		predicted = null;
+		beginTransition( "cast" );
+		pose = current;
+		segment = bindOwners( {
+			from: current,
+			to: { ...from, angle: movementHeading( current, from ) },
+			start: now,
+			timing: "speed",
+			lead: "server",
+			duration: movementDuration( poseDistance( current, from ), speed )
+		} );
 	}
 	/*
 ================
@@ -785,6 +890,8 @@ life
 			walk = null;
 			acknowledged = nextId;
 			pending.clear();
+			keptWalk = null;
+			lastGoal = undefined;
 			error = null;
 			life = "dead";
 			beginTransition( "death", true );
@@ -869,6 +976,8 @@ went on: rejoin it now rather than when the hold lapses.
 ================
 		*/
 		castRefused( now: number ) {
+			// A refused press never walked: its predicted run-up walks back.
+			if ( predicted?.approach ) endPrediction( now );
 			rejoinServerWalk( now, true );
 		},
 		/*
@@ -1004,9 +1113,11 @@ native
 			castHold = null;
 			beginTransition( "native" );
 			const adopt = predicted !== null && decoded.kind !== "direction" &&
-				samePredictedGoal( predicted.to, decoded.to );
+				(predicted.approach ?
+					sameApproachWalk( predicted, decoded.to ) :
+					samePredictedGoal( predicted.to, decoded.to ));
 			predicted = null;
-			authoritative = reconcile( decoded.from );
+			authoritative = reconcile( decoded.from, KEEP_CELL );
 			if ( adopt ) {
 				// The predicted run-up is the walk the server just started from
 				// the same place: keep the progress made while the request was in
@@ -1110,6 +1221,8 @@ seed
 			predicted = null;
 			castHold = null;
 			pending.clear();
+			keptWalk = null;
+			lastGoal = undefined;
 			error = null;
 		},
 		/*
@@ -1130,6 +1243,15 @@ correct
 			const wasDisplacing = segment?.fixedTiming;
 			const publishedHistory = segment?.presentationHistory ?? transition.walkingPath;
 			if ( now !== undefined ) advanceTo( now );
+			if ( now !== undefined && correctsWalkStart( admitPose( value ) ) ) {
+				// The server stopped (an arrival, a settle) where the walk in
+				// flight left from, before it read that walk. It starts the walk
+				// from this same point, so the progress made since stands.
+				authoritative = reconcile( admitPose( value ), RESOLVE_CELL );
+				keptWalk = { id: nextId, since: now };
+				return;
+			}
+			keptWalk = null;
 			// The display can already occupy the checked lookahead. Advance
 			// retires that cache, so retain its proven return edges beforehand.
 			const previousHistory = wasDisplacing || segment?.fixedTiming ?
@@ -1140,7 +1262,7 @@ correct
 			// A live source correction ends motion, but is not a new spawn.
 			// Resolve its surface through the existing navigation owner before
 			// retiring the segment; server endpoint Y can be below a hill/deck.
-			pose = authoritative = reconcile( admitPose( value ) );
+			pose = authoritative = reconcile( admitPose( value ), RESOLVE_CELL );
 			if ( before ) {
 				noteReanchor( "server correction", before, pose, {
 					atMs: now ?? poseAtMs,
@@ -1241,7 +1363,8 @@ request
 			record( { kind: "movement-diagnostic", event: "request", simulationAtMs: now, requestId: id, target: to } );
 			nextId = id;
 			beginTransition( "input" );
-			pending.set( id, { to, sent: now } );
+			pending.set( id, { to, from: pose, previous: lastGoal, sent: now } );
+			lastGoal = to;
 			error = null;
 			walk = null;
 			predicted = null;
@@ -1277,7 +1400,7 @@ complete navigation coverage, like request. The acknowledgement adopts the
 walk (native); a refusal ends it (endPrediction).
 ================
 		*/
-		predictApproach( value: Pose, now: number ): boolean {
+		predictApproach( value: Pose, now: number, approach = false ): boolean {
 			if ( !pose || life === "dead" || walk || pending.size || predicted ) return false;
 			advanceTo( now );
 			const current = pose,
@@ -1289,7 +1412,7 @@ walk (native); a refusal ends it (endPrediction).
 			const clipped = navigation.available( current ) ? to : null;
 			if ( !clipped || poseDistance( clipped, to ) >= ENDPOINT_EPSILON ) return false;
 			beginTransition( "input" );
-			predicted = { from: current, to };
+			predicted = { from: current, to, approach, since: now };
 			pose = current;
 			segment = {
 				from: current,
@@ -1312,20 +1435,7 @@ start, so walk back there.
 ================
 		*/
 		endPrediction( now: number ) {
-			if ( !predicted || !pose ) return;
-			advanceTo( now );
-			const from = predicted.from, current = pose;
-			predicted = null;
-			beginTransition( "cast" );
-			pose = current;
-			segment = bindOwners( {
-				from: current,
-				to: { ...from, angle: movementHeading( current, from ) },
-				start: now,
-				timing: "speed",
-				lead: "server",
-				duration: movementDuration( poseDistance( current, from ), speed )
-			} );
+			endPrediction( now );
 		},
 		/*
 ================
@@ -1334,6 +1444,16 @@ predicting
 		*/
 		predicting(): boolean {
 			return predicted !== null;
+		},
+		/*
+================
+approachPredictedSince
+
+When an unacknowledged skill run-up began, or undefined.
+================
+		*/
+		approachPredictedSince(): number | undefined {
+			return predicted?.approach ? predicted.since : undefined;
 		},
 		/*
 ================
@@ -1375,9 +1495,11 @@ over complete navigation coverage; otherwise the receipt starts the walk.
 			const leg = directionSegment( pose, heading, now, "client", 1, true );
 			pending.set( id, {
 				to: leg?.to ?? directionLegEnd( pose, heading ),
+				from: pose,
 				sent: now,
 				direction: heading
 			} );
+			lastGoal = undefined;
 			error = null;
 			walk = { heading, factor: 1, nextDrift: now + DRIFT_PERIOD_MS, reference: null };
 			if ( leg ) segment = leg;
@@ -1409,6 +1531,7 @@ receive
 			if ( !command ) {
 				throw new Error( "Unsolicited movement receipt" );
 			}
+			roundTripMs = Math.max( 0, now - command.sent );
 			const world = receiptWorld( r ), to = world.spawn, s = world.segment;
 			record( {
 				...receiptEvent,
@@ -1476,7 +1599,7 @@ receive
 					limit: blocked ? poseDistance( start, to ) : Infinity
 				};
 				const walkingOwner = owner;
-				authoritative = reconcile( start );
+				authoritative = reconcile( start, KEEP_CELL );
 				if ( segment?.direction && !blocked ) owner = walkingOwner;
 				else {
 					// Nothing was predicted: follow the server's leg.
@@ -1502,7 +1625,7 @@ receive
 			if ( command.direction !== undefined ) walk = null;
 			beginTransition( "receipt" );
 			const predictedOwner = owner;
-			authoritative = reconcile( replacement?.from ?? to );
+			authoritative = reconcile( replacement?.from ?? to, KEEP_CELL );
 			// A receipt confirms an endpoint, not the client's old frame. The
 			// server's endpoint is the one that counts, and it is accepted from
 			// wherever the prediction has walked to as long as that walk can
@@ -1526,7 +1649,7 @@ receive
 			} else if ( reconciled.kind === "settle" ) {
 				// The prediction already passed the server's stop: settle on the
 				// stop, never back at the server's start.
-				pose = authoritative = reconcile( to );
+				pose = authoritative = reconcile( to, KEEP_CELL );
 				replacement = null;
 			} else pose = authoritative;
 			segment = replacement ? bindOwners( { ...replacement, from: pose } ) : null;
@@ -1586,6 +1709,23 @@ step
 					} ms, pending ${pending.size}`,
 					{ cause: MOVEMENT_RECEIPT_TIMEOUT }
 				);
+			}
+			// A kept walk's receipt is overdue: the server never walked it.
+			// Walk back to the stop it sent instead of staying ahead of it.
+			if ( keptWalk && !pending.has( keptWalk.id ) ) keptWalk = null;
+			if ( keptWalk && now - keptWalk.since > roundTripMs + KEPT_WALK_GRACE_MS && pose && authoritative ) {
+				keptWalk = null;
+				advanceTo( now );
+				const current = pose, to = authoritative;
+				beginTransition( "correction" );
+				segment = bindOwners( {
+					from: current,
+					to: { ...to, angle: movementHeading( current, to ) },
+					start: now,
+					timing: "speed",
+					lead: "server",
+					duration: movementDuration( poseDistance( current, to ), speed )
+				} );
 			}
 			// No settle came: the server is still walking. Rejoin its path.
 			if ( castHold && now >= castHold.until ) rejoinServerWalk( now, false );
@@ -1668,6 +1808,8 @@ clear
 			predicted = null;
 			castHold = null;
 			pending.clear();
+			keptWalk = null;
+			lastGoal = undefined;
 			error = null;
 			navigation.clear();
 			navigationRegion = undefined;

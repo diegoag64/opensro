@@ -11,12 +11,23 @@ failure names that frame so it can be reported (session.ts).
 ===========================================================================
 */
 import { createCodec } from "./codec/codec";
+import {
+	INCIDENT_JOURNAL_AGE_MS,
+	INCIDENT_JOURNAL_ROWS,
+	NET_JOURNAL_FIELDS,
+	NET_JOURNAL_GAP,
+	NET_JOURNAL_IN,
+	NET_JOURNAL_OUT
+} from "@/engine/contracts/network";
 import type { NetworkOwner, WireFrame, NetworkFailure } from "@/engine/contracts/network";
 
 const PING_INTERVAL_MS = 5000;
 const PING_STALE_MS = 15000;
 const PING_TOKEN_BYTES = 4;
 const PING_BACKLOG_LIMIT = 65536;
+// The frame journal for bug reports (takeJournal) holds at most this many
+// frames between takes. Opcodes and sizes only: no payload ever enters it.
+const NET_JOURNAL_RECORDS = 4096;
 
 /*
 ================
@@ -32,7 +43,43 @@ export function createNetwork(
 	let pingToken = 0, pendingPing = false, pingSentAt = -Infinity, pingReceivedAt = -Infinity;
 	let measuredPing: number | null = null;
 	const inbox: WireFrame[] = [];
+	let journal = new Float64Array( NET_JOURNAL_RECORDS * NET_JOURNAL_FIELDS ), journalCount = 0;
+	// The incident ring: the bug-report journal above is drained every second,
+	// so a failure would find at most one second in it.
+	const recent = new Float64Array( INCIDENT_JOURNAL_ROWS * NET_JOURNAL_FIELDS );
+	let recentNext = 0, recentCount = 0;
 	let ended: string | null = null;
+	/*
+	================
+	note
+
+	Journals one frame. A full journal drops its older half: takes happen
+	about once a second, so this only bounds a stalled consumer. The drop is
+	never silent: a gap record (NET_JOURNAL_GAP) stands in for the dropped
+	frames with their count, so a hole cannot read as "nothing was sent".
+	================
+	*/
+	function note( direction: number, opcode: number, bytes: number ) {
+		if ( journalCount === NET_JOURNAL_RECORDS ) {
+			const keep = (NET_JOURNAL_RECORDS >> 1) - 1, dropped = NET_JOURNAL_RECORDS - keep;
+			const earlierGap = journal[1] === NET_JOURNAL_GAP ? journal[3]! - 1 : 0;
+			const lastDroppedAt = journal[(dropped - 1) * NET_JOURNAL_FIELDS]!;
+			journal.copyWithin( NET_JOURNAL_FIELDS, dropped * NET_JOURNAL_FIELDS );
+			journal[0] = lastDroppedAt;
+			journal[1] = NET_JOURNAL_GAP;
+			journal[2] = 0;
+			journal[3] = dropped + earlierGap;
+			journalCount = keep + 1;
+		}
+		const at = journalCount++ * NET_JOURNAL_FIELDS;
+		journal[at] = performance.timeOrigin + performance.now();
+		journal[at + 1] = direction;
+		journal[at + 2] = opcode;
+		journal[at + 3] = bytes;
+		recent.set( journal.subarray( at, at + NET_JOURNAL_FIELDS ), recentNext * NET_JOURNAL_FIELDS );
+		recentNext = (recentNext + 1) % INCIDENT_JOURNAL_ROWS;
+		recentCount = Math.min( recentCount + 1, INCIDENT_JOURNAL_ROWS );
+	}
 	let endReason: NetworkFailure | undefined;
 	/*
 	================
@@ -115,6 +162,7 @@ export function createNetwork(
 			throw new Error( "Transport outbound backlog exceeded" );
 		}
 		socket.send( encoded );
+		note( NET_JOURNAL_OUT, frame.opcode, encoded.byteLength );
 	}
 	return {
 		disconnect,
@@ -176,6 +224,7 @@ export function createNetwork(
 						throw new Error( "Non-binary transport frame" );
 					}
 					const frame = codec.decode( new Uint8Array( event.data ) );
+					note( NET_JOURNAL_IN, frame.opcode, event.data.byteLength );
 					if ( frame.opcode === 5 ) {
 						if ( frame.payload.length !== 1 ) throw new Error( "Invalid transport goodbye" );
 						const reason = frame.payload[0]!,
@@ -268,6 +317,30 @@ export function createNetwork(
 				throw new Error( "Transport handshake incomplete" );
 			}
 			send( frame );
+		},
+		/*
+		================
+		takeJournal
+
+		The frames journaled since the last take, or null when there are none.
+		================
+		*/
+		recentJournal() {
+			const now = performance.timeOrigin + performance.now(), rows: number[] = [];
+			for ( let i = 0; i < recentCount; i++ ) {
+				const at = ((recentNext - recentCount + i + INCIDENT_JOURNAL_ROWS) % INCIDENT_JOURNAL_ROWS) *
+					NET_JOURNAL_FIELDS;
+				const age = Math.min( 0, Math.round( recent[at]! - now ) );
+				if ( age < -INCIDENT_JOURNAL_AGE_MS ) continue;
+				rows.push( age, recent[at + 1]!, recent[at + 2]!, recent[at + 3]! );
+			}
+			return rows;
+		},
+		takeJournal() {
+			if ( !journalCount ) return null;
+			const taken = journal.slice( 0, journalCount * NET_JOURNAL_FIELDS );
+			journalCount = 0;
+			return taken;
 		},
 		drain( consume ) {
 			const generation = epoch, count = inbox.length;

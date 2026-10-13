@@ -11,7 +11,6 @@ apps/client-next/src/engine/contracts/model.ts
 apps/client-next/src/engine/contracts/navigation.ts
 apps/client-next/src/engine/contracts/presentation-random.ts
 apps/client-next/src/engine/contracts/scenery.ts
-apps/client-next/src/engine/contracts/simulation.ts
 apps/client-next/src/engine/foundation/animation/action-time.ts
 apps/client-next/src/engine/foundation/animation/animation-activation.ts
 apps/client-next/src/engine/foundation/animation/animation-dispatch.ts
@@ -69,7 +68,6 @@ apps/client-next/src/engine/foundation/gameplay/cast-results.ts
 apps/client-next/src/engine/foundation/gameplay/chat-blocks.ts
 apps/client-next/src/engine/foundation/gameplay/chat-feedback.ts
 apps/client-next/src/engine/foundation/gameplay/cos-behavior.ts
-apps/client-next/src/engine/foundation/gameplay/cos-record.ts
 apps/client-next/src/engine/foundation/gameplay/cos-timer.ts
 apps/client-next/src/engine/foundation/gameplay/equipment-drop.ts
 apps/client-next/src/engine/foundation/gameplay/event-environment.ts
@@ -97,7 +95,6 @@ apps/client-next/src/engine/foundation/gameplay/system-notices.ts
 apps/client-next/src/engine/foundation/gameplay/target-notices.ts
 apps/client-next/src/engine/foundation/gameplay/training.ts
 apps/client-next/src/engine/foundation/gameplay/travel.ts
-apps/client-next/src/engine/foundation/gameplay/unique-notices.ts
 apps/client-next/src/engine/foundation/gameplay/vitals.ts
 apps/client-next/src/engine/foundation/gameplay/weather.ts
 apps/client-next/src/engine/foundation/gameplay/whisper-block.ts
@@ -180,7 +177,6 @@ apps/client-next/src/engine/foundation/ui/skill-layout.ts
 apps/client-next/src/engine/foundation/ui/skill-tooltip-data.ts
 apps/client-next/src/engine/foundation/ui/sound-catalog.ts
 apps/client-next/src/engine/foundation/ui/stretch-ring.ts
-apps/client-next/src/engine/foundation/ui/text-lines.ts
 apps/client-next/src/engine/foundation/ui/tooltip-rows.ts
 apps/client-next/src/engine/foundation/ui/unique-banner.ts
 apps/client-next/src/engine/foundation/ui/vertical-spin.ts
@@ -210,7 +206,6 @@ apps/client-next/src/engine/runtime/ui/hud/progression-bars.ts
 apps/client-next/src/engine/runtime/ui/hud/quest-banner.ts
 apps/client-next/src/engine/runtime/ui/hud/quest-timers.ts
 apps/client-next/src/engine/runtime/ui/hud/region-banner.ts
-apps/client-next/src/engine/runtime/ui/hud/scroll.ts
 apps/client-next/src/engine/runtime/ui/hud/skill-training.ts
 apps/client-next/src/engine/runtime/ui/hud/unique-banner.ts
 apps/client-next/src/engine/runtime/world/camera/camera.ts
@@ -328,7 +323,6 @@ apps/client-next/tests/browser/tooltips-live.test.mjs
 apps/client-next/tests/browser/travel.test.mjs
 apps/client-next/tests/browser/ui-bridge-lifecycle.test.mjs
 apps/client-next/tests/browser/ui-retail-audit.test.mjs
-apps/client-next/tests/browser/ui-specialized.test.mjs
 apps/client-next/tests/browser/ui.test.mjs
 apps/client-next/tests/browser/window-chrome-live.test.mjs
 apps/client-next/tests/browser/world-admission.test.mjs

@@ -446,28 +446,33 @@ type navObjectRecordJSON struct {
 	LinkEdges     string      `json:"linkEdges"`
 }
 
-// decodeObjectPlacements parses a navmesh region entry's raw objects
-// array; nil/malformed degrades to no placements.
 /*
 ================
 decodeObjectPlacements
+
+Parses a navmesh region entry's raw objects array; nil or malformed
+degrades to no placements. assetId indexes the object table, and 0 is a
+valid object: CMapLoader_CreateNavMeshObjectInstance (4413B0) checks only
+obj.dwID < m_sObjectInfo.size() (the Jangan ferry deck, cj_ferry_floor02,
+is object 0). A row dropped here keeps the others' original ordinals;
+entries is the length of the raw list, the bound of those ordinals.
 ================
 */
-func decodeObjectPlacements(raw json.RawMessage) []objectNavPlacement {
+func decodeObjectPlacements(raw json.RawMessage) (placements []objectNavPlacement, entries int) {
 	if len(raw) == 0 {
-		return nil
+		return nil, 0
 	}
 	var rows []navObjectRecordJSON
 	if err := json.Unmarshal(raw, &rows); err != nil {
-		return nil
+		return nil, 0
 	}
-	placements := make([]objectNavPlacement, 0, len(rows))
+	placements = make([]objectNavPlacement, 0, len(rows))
 	for ordinal, row := range rows {
 		assetID, okID := jsonInt(row.AssetID)
 		x, errX := row.X.Float64()
 		y, errY := row.Y.Float64()
 		z, errZ := row.Z.Float64()
-		if !okID || assetID <= 0 || errX != nil || errY != nil || errZ != nil {
+		if !okID || assetID < 0 || errX != nil || errY != nil || errZ != nil {
 			continue
 		}
 		yaw, err := row.Yaw.Float64()
@@ -496,7 +501,7 @@ func decodeObjectPlacements(raw json.RawMessage) []objectNavPlacement {
 			linkEdgeCount: linkEdgeCount,
 		})
 	}
-	return placements
+	return placements, len(rows)
 }
 
 /*
@@ -740,6 +745,9 @@ type resolvedObjectNav struct {
 	placement      objectNavPlacement
 	meshes         []*objectNavMesh
 	cosYaw, sinYaw float64 // immutable outdoor placement rotation, computed at cache construction
+	// reach bounds everything the chord scans consult for this placement
+	// (objectnav_reach.go): a chord that misses it can find nothing here.
+	reach objectReach
 }
 
 // objectNavSetKey addresses one region entry's resolved placement set.
@@ -767,23 +775,38 @@ objectNavSetForOffset
 ================
 */
 func (v *WaterValidator) objectNavSetForOffset(surface *groundSurface, dxRegion, dzRegion int) []resolvedObjectNav {
+	set, _ := v.objectNavSetReach(surface, dxRegion, dzRegion)
+	return set
+}
+
+/*
+================
+objectNavSetReach
+
+The cached set and its union reach (objectnav_reach.go), resolved together.
+================
+*/
+func (v *WaterValidator) objectNavSetReach(surface *groundSurface, dxRegion, dzRegion int) ([]resolvedObjectNav, objectReach) {
 	key := objectNavSetKey{surface: surface, offset: offsetKey(dxRegion, dzRegion)}
 	v.mu.Lock()
 	set, cached := v.objectNavSets[key]
+	reach := v.objectNavReaches[key]
 	v.mu.Unlock()
 	if cached {
-		return set
+		return set, reach
 	}
 
 	built := v.buildObjectNavSet(surface, key.offset)
+	builtReach := unionReach(built)
 
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if set, cached := v.objectNavSets[key]; cached {
-		return set
+		return set, v.objectNavReaches[key]
 	}
 	v.objectNavSets[key] = built
-	return built
+	v.objectNavReaches[key] = builtReach
+	return built, builtReach
 }
 
 // buildObjectNavSet is the uncached resolution (empty slice = the cached
@@ -810,7 +833,11 @@ func (v *WaterValidator) buildObjectNavSet(surface *groundSurface, offset int64)
 			meshes = append(meshes, v.loadObjectNavMeshes(meshPath)...)
 		}
 		if len(meshes) > 0 {
-			set = append(set, resolvedObjectNav{placement: placement, meshes: meshes, cosYaw: math.Cos(placement.yaw), sinYaw: math.Sin(placement.yaw)})
+			entry := resolvedObjectNav{placement: placement, meshes: meshes, cosYaw: math.Cos(placement.yaw), sinYaw: math.Sin(placement.yaw)}
+			if !v.scanEveryPlacement {
+				entry.reach = newObjectReach(&entry)
+			}
+			set = append(set, entry)
 		}
 	}
 	return set

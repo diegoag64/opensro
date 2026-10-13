@@ -106,6 +106,25 @@ type SessionSnapshot struct {
 
 /*
 ==================
+SessionSnapshot.ownsCompanion
+
+Whether gid is one of this session's own summoned companions.
+==================
+*/
+func (s *SessionSnapshot) ownsCompanion(gid uint32) bool {
+	if s.COS != nil && s.COS.Row.Gid == gid {
+		return true
+	}
+	for _, pet := range s.Companions {
+		if pet != nil && pet.Row.Gid == gid {
+			return true
+		}
+	}
+	return false
+}
+
+/*
+==================
 SessionView
 
 The part of a SessionSnapshot that tick hooks read: identity, population,
@@ -210,7 +229,14 @@ and the following private progression in the SAME coordinator turn rather
 than laundering the private tail through a future-tick queue.
 
 ExceptSessionID and OnlyCharacterID are mutually exclusive. Invalid mixed
-routes fail closed in runHooks.
+routes fail closed in runHooks. ExceptCharacterID applies to a SourceGID
+route only: a companion's public events skip its owner, who already has
+them in its private batch.
+
+Deliver, when set, replaces routing: the producer already captured its
+recipients (with their scene revisions) at commit time, and the ticker only
+runs the send in this batch's place, so it keeps its order among the hook's
+other batches.
 ==================
 */
 type DivisionFrames struct {
@@ -220,7 +246,11 @@ type DivisionFrames struct {
 	DivisionID      string
 	Frames          []Frame
 	ExceptSessionID string
-	OnlyCharacterID int64
+	// ExceptCharacterID leaves that character's session out of a SourceGID
+	// route.
+	ExceptCharacterID int64
+	OnlyCharacterID   int64
+	Deliver           func()
 }
 
 /*
@@ -724,11 +754,15 @@ Delivers one hook's routed frames to sessions or divisions.
 */
 func (t *Ticker) routeHookFrames(routedFrames []DivisionFrames, work []divisionTickWork) {
 	for _, routed := range routedFrames {
+		if routed.Deliver != nil {
+			routed.Deliver()
+			continue
+		}
 		if len(routed.Frames) == 0 {
 			continue
 		}
 		if routed.OnlyCharacterID != 0 {
-			if routed.ExceptSessionID != "" || routed.SourceGID != 0 {
+			if routed.ExceptSessionID != "" || routed.SourceGID != 0 || routed.ExceptCharacterID != 0 {
 				continue
 			}
 			for _, division := range work {
@@ -751,7 +785,8 @@ func (t *Ticker) routeHookFrames(routedFrames []DivisionFrames, work []divisionT
 					continue
 				}
 				for _, viewer := range division.sessions {
-					if viewer.SessionID == routed.ExceptSessionID {
+					if viewer.SessionID == routed.ExceptSessionID ||
+						routed.ExceptCharacterID != 0 && viewer.CharacterID == routed.ExceptCharacterID {
 						continue
 					}
 					peer := PlayerObjectID(viewer.CharacterID) == routed.SourceGID || division.state.shownPeers[viewer.SessionID][routed.SourceGID]
@@ -764,7 +799,11 @@ func (t *Ticker) routeHookFrames(routedFrames []DivisionFrames, work []divisionT
 							}
 						}
 					}
+					// A pet is never shown to its own owner by the peer lane
+					// (runPeerCOSVisibility skips it), yet the owner sees it:
+					// its own cast closes must reach it as they reach peers.
 					_, cos := division.state.shownCOS[viewer.SessionID][routed.SourceGID]
+					cos = cos || viewer.ownsCompanion(routed.SourceGID)
 					monster := false
 					if ops := division.state.monsters; ops != nil {
 						monster = ops.shownMonsters[viewer.SessionID][routed.SourceGID]
@@ -775,6 +814,11 @@ func (t *Ticker) routeHookFrames(routedFrames []DivisionFrames, work []divisionT
 				}
 				break
 			}
+			continue
+		}
+		if routed.ExceptCharacterID != 0 {
+			// ExceptCharacterID belongs to a SourceGID route only; a division
+			// broadcast cannot honour it, so the mixed route fails closed.
 			continue
 		}
 		t.Push.PushToDivision(routed.DivisionID, routed.Frames, routed.ExceptSessionID)

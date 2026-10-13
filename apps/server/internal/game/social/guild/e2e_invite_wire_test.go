@@ -40,6 +40,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"opensro.online/server/internal/domain"
 	"path/filepath"
 	"testing"
 	"time"
@@ -168,6 +169,8 @@ func startInviteServer(t *testing.T, dir string, seeds []*enterworld.Character) 
 		invites.SessionClosed(s)
 	})
 
+	// The entry seed records its guild block as the GameWorld does.
+	deps.PublishEntry = guild.EntryPublisher(func() domain.GuildStore { return deps.Guilds })
 	enterworld.Register(srv.Hub, deps)
 	partyRt.Register(srv.Hub)
 	guild.Register(srv.Hub, deps, directory, nil, nil)
@@ -486,8 +489,10 @@ func TestGuildInvitePartyOneProposalPerPlayerEndToEnd(t *testing.T) {
 
 	race := func() *int64 { v := enterworld.RaceChina; return &v }
 	gender := func() *int64 { v := enterworld.GenderMale; return &v }
+	// 513F90: a party proposer needs level 5.
+	proposerLevel := int64(5)
 	seeds := []*enterworld.Character{
-		{Name: invE2ENameH, ModelCodename: "CHAR_CH_MAN_ADVENTURER", RaceIndex: race(), Gender: gender()},
+		{Name: invE2ENameH, ModelCodename: "CHAR_CH_MAN_ADVENTURER", RaceIndex: race(), Gender: gender(), Level: &proposerLevel},
 		{Name: invE2ENameI, ModelCodename: "CHAR_CH_MAN_ADVENTURER", RaceIndex: race(), Gender: gender()},
 	}
 	server := startInviteServer(t, dir, seeds)

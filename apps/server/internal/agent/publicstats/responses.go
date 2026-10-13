@@ -15,20 +15,9 @@ Port-only, not native: the original has no public read API.
 */
 package publicstats
 
-// SchemaVersion moves when a response shape changes incompatibly.
-const SchemaVersion = 1
-
-// Respawn is a unique nest's authored delay range.
-type Respawn struct {
-	MinSeconds int `json:"minSeconds"`
-	MaxSeconds int `json:"maxSeconds"`
-}
-
-// Window is the span a dead unique can return in.
-type Window struct {
-	OpensAt  string `json:"opensAt"`
-	ClosesAt string `json:"closesAt"`
-}
+// SchemaVersion moves when a response shape changes incompatibly. 2: a
+// unique no longer carries its respawn delay or return window.
+const SchemaVersion = 2
 
 // LastKill is a unique's most recent recorded kill.
 type LastKill struct {
@@ -37,7 +26,9 @@ type LastKill struct {
 	Guild  string `json:"guild,omitempty"`
 }
 
-// Unique is one P1 row.
+// Unique is one P1 row. When a unique returns is a secret (owner,
+// 2026-10-11): the row says only whether it is up, since when, and who
+// killed it last, never its nest's respawn delay.
 type Unique struct {
 	RefObjID  uint32    `json:"refObjId"`
 	Name      string    `json:"name"`
@@ -45,8 +36,6 @@ type Unique struct {
 	RegionID  uint16    `json:"regionId"`
 	Alive     bool      `json:"alive"`
 	SpawnedAt *string   `json:"spawnedAt"`
-	Respawn   Respawn   `json:"respawn"`
-	NextWin   *Window   `json:"nextWindow"`
 	LastKill  *LastKill `json:"lastKill"`
 }
 
@@ -119,10 +108,11 @@ type CharacterSummary struct {
 
 // OwnCharacter is one of an account's characters with its privacy flag.
 type OwnCharacter struct {
-	Name   string `json:"name"`
-	Level  int64  `json:"level"`
-	Race   string `json:"race"`
-	Hidden bool   `json:"hidden"`
+	Name       string `json:"name"`
+	Level      int64  `json:"level"`
+	Race       string `json:"race"`
+	Hidden     bool   `json:"hidden"`
+	GearHidden bool   `json:"gearHidden"`
 }
 
 // OwnCharactersResponse is the website's authenticated
@@ -157,11 +147,27 @@ type Stats struct {
 	MP  int64 `json:"mp"`
 }
 
-// WornItem is one equipment or avatar socket.
+// WornItem is one equipment or avatar socket, with what the in-game item
+// tooltip prints from the item itself (CIFItemTooltip, 78C5B0 -> 78BD00 ->
+// 555720): the reference's ranges come from the catalogue, the roll from
+// here.
 type WornItem struct {
 	Slot      int64  `json:"slot"`
 	RefItemID uint32 `json:"refItemId"`
 	Plus      int64  `json:"plus,omitempty"`
+	// Variance is the item's packed white-stat roll as a decimal u64 (five
+	// bits a stat, 0..31, in the order of its equipment family), as the
+	// CSOItem wire carries it; absent for an item without one.
+	Variance string `json:"variance,omitempty"`
+	// Durability is a worn item's current durability, present even at 0 (a
+	// broken item, which the tooltip prints as 0/max in red); absent on an
+	// avatar socket, which has none.
+	Durability *int64 `json:"durability,omitempty"`
+	// MagicOptions are the item's blue stats in the item's own order, each
+	// the encoded u64 the CSOItem wire carries (low u16 the magicoption.txt
+	// param id, high u32 the value; domain.InventoryRow) as a decimal
+	// string, so the client's own tooltip code reads them unchanged.
+	MagicOptions []string `json:"magicOptions,omitempty"`
 }
 
 // Look is what the 3D viewer (V1) needs to draw the character.
@@ -174,19 +180,24 @@ type Look struct {
 
 // Profile is P6 GET /public/v1/characters/{name}.
 type Profile struct {
-	Name        string    `json:"name"`
-	Race        string    `json:"race"`
-	Gender      string    `json:"gender"`
-	Level       int64     `json:"level"`
-	Guild       *Guild    `json:"guild"`
-	Job         string    `json:"job"`
-	JobLevel    uint8     `json:"jobLevel"`
-	Masteries   []Mastery `json:"masteries"`
-	Stats       Stats     `json:"stats"`
-	Look        Look      `json:"look"`
-	UniqueKills int       `json:"uniqueKills"`
-	LastLogin   *string   `json:"lastLogin"`
-	Online      bool      `json:"online"`
+	Name      string    `json:"name"`
+	Race      string    `json:"race"`
+	Gender    string    `json:"gender"`
+	Level     int64     `json:"level"`
+	Guild     *Guild    `json:"guild"`
+	Job       string    `json:"job"`
+	JobLevel  uint8     `json:"jobLevel"`
+	Masteries []Mastery `json:"masteries"`
+	Stats     Stats     `json:"stats"`
+	Look      Look      `json:"look"`
+	// GearHidden is the player's "hide my gear" choice: look keeps the
+	// items, plus and sockets (the 3D view draws them, and the game shows
+	// +N glows to anyone nearby) but no rolls, blue stats or durability.
+	// The +N therefore stays public, here and in the rankings' gear plus.
+	GearHidden  bool    `json:"gearHidden,omitempty"`
+	UniqueKills int     `json:"uniqueKills"`
+	LastLogin   *string `json:"lastLogin"`
+	Online      bool    `json:"online"`
 }
 
 // Rule is one port-only switch and its live value.
@@ -249,6 +260,25 @@ type ScheduleEvent struct {
 type ScheduleResponse struct {
 	ServerTime string          `json:"serverTime"`
 	Events     []ScheduleEvent `json:"events"`
+}
+
+// ChatLine is one public chat line. Kind is "chat" (ordinary beta chat,
+// shard-wide), "global" (the Global Chatting item) or "notice" (an
+// operator announcement, Character null). Profile is false when the
+// character hid their profile: the site shows the name without a link.
+type ChatLine struct {
+	At        string  `json:"at"`
+	Kind      string  `json:"kind"`
+	Character *string `json:"character"`
+	Profile   bool    `json:"profile"`
+	Text      string  `json:"text"`
+}
+
+// ChatResponse is P10 GET /public/v1/chat: the latest public lines,
+// oldest first, at most chatfeed.MaxLines. Whispers, party, guild and
+// union lines never enter it; a banned or muted author's lines are gone.
+type ChatResponse struct {
+	Lines []ChatLine `json:"lines"`
 }
 
 // Gear is a ranked player's worn equipment plus: the sum and the highest.

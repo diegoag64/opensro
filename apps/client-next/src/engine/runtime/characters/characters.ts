@@ -724,7 +724,7 @@ export function createCharacterPresentation(
 			{ renderer, resources, effects }
 		);
 		auxiliary.step(
-			{ entities, seconds, next, gameplay, localMover, castByActor },
+			{ entities, seconds, next, gameplay, localMover, castByActor, particleHolders },
 			{
 				resourceFor,
 				dress: published.dress,
@@ -939,6 +939,9 @@ export function createCharacterPresentation(
 		knows: viewerQueries.knows,
 		itemType: viewerQueries.itemType,
 		dressed: viewerQueries.dressed,
+		glows: viewerQueries.glows,
+		glowing: viewerQueries.glowing,
+		linkedRide: viewerQueries.linkedRide,
 		/*
 		================
 		entryReady

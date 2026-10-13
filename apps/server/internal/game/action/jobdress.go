@@ -93,6 +93,10 @@ type jobDress struct {
 // errCodeCantActivateCart is UIIT_MSG_STRGERR_YOU_CANT_ACTIVATE_CART.
 const errCodeCantActivateCart uint8 = 0x49
 
+// errCodeThiefCartInTown is UIIT_MSG_STRGERR_ROBBER_CANT_SUMMON_CART_IN_TOWN
+// (category 1, code 149): "a thief cannot summon a transport in a town".
+const errCodeThiefCartInTown uint8 = 0x95
+
 /*
 ================
 transportJob
@@ -254,6 +258,54 @@ func (rt *Runtime) jobStripRefusal(division string, c *enterworld.Character, des
 		return jobWearErrBagFull
 	}
 	return 0
+}
+
+/*
+================
+townRegion
+
+A town is a region where players may not fight (the safe zones).
+================
+*/
+func townRegion(regionID uint16) bool {
+	allowed, known := worldgeom.RegionPlayerCombat(regionID)
+	return known && !allowed
+}
+
+/*
+================
+ThiefCargoTownBlocked
+
+#721, the movement side of the stolen-goods rule: a thief in job mode
+whose transport is summoned may not cross from a battlefield region into a
+protected one. v1.188 CGObjCOS_AdmitJobRegionTransition (4D2C20) refuses a
+COS's region change only when its owner's job state is thief (2), the
+region it leaves has IsBattleField set and the one it enters has it clear
+(region record +2): moving within a protected region, the Thieves' Den
+included, is never refused. Thief town is one isolated protected region,
+reached through its gates, so a thief walks it freely to sell; re-testing
+the destination alone (#726) refused every step there. INFERENCE: native
+refuses the transport's own transition; the port refuses the owner's move,
+which the transport follows, and tests only its start and end regions, so
+a walk from a battlefield through a protected sector and back out is not
+refused (native tests each region change the transport makes).
+================
+*/
+func (rt *Runtime) ThiefCargoTownBlocked(c *enterworld.Character, fromRegion, toRegion uint16) bool {
+	return enterworld.DressedJob(c) == domain.JobThief && rt.summonedVehicle(c) &&
+		battlefieldRegion(fromRegion) && townRegion(toRegion)
+}
+
+/*
+================
+battlefieldRegion
+
+A region whose _RefRegion.IsBattleField is set: players may fight there.
+================
+*/
+func battlefieldRegion(regionID uint16) bool {
+	allowed, known := worldgeom.RegionPlayerCombat(regionID)
+	return known && allowed
 }
 
 /*

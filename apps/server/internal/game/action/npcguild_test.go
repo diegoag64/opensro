@@ -234,7 +234,7 @@ func TestMemberCallsAReleaseVoteOnALongGoneMaster(t *testing.T) {
 TestGuildWarehouseOpensAtLevelTwoForOneMember
 
 5C7440: level 1 refuses with 0x4A; at level 2 the master holds the room,
-lists 30 slots and deposits gold into it.
+lists 30 slots and deposits gold into it, whatever is selected meanwhile.
 ================
 */
 func TestGuildWarehouseOpensAtLevelTwoForOneMember(t *testing.T) {
@@ -265,7 +265,9 @@ func TestGuildWarehouseOpensAtLevelTwoForOneMember(t *testing.T) {
 	if !d.authority.UpdateCharacters([]*enterworld.Character{c}, "fixture-gold", func() bool { c.Gold = &gold; return true }) {
 		t.Fatal("fixture gold refused")
 	}
-	d.rt.Selected.Set(testDivision, c.Name, guildManagerGid)
+	// Another selection leaves the held room usable (the session, not the
+	// selection, names the manager; BR-261011-1342-EE58).
+	d.rt.Selected.Set(testDivision, c.Name, guildManagerGid+1)
 	out := d.rt.applyGuildStorageMove(testDivision, c, wire.ItemMoveRequest{MovementType: wire.MoveTypeGuildStorageGoldDeposit, GoldAmount: 1200})
 	if out.Frames[0].Payload[0] != 1 || goldOf(c) != 3800 {
 		t.Fatalf("deposit %+v gold %d", out.Frames, goldOf(c))
@@ -277,5 +279,49 @@ func TestGuildWarehouseOpensAtLevelTwoForOneMember(t *testing.T) {
 	d.rt.HandleGuildStorageClose(testDivision, c, request)
 	if out := d.rt.applyGuildStorageMove(testDivision, c, wire.ItemMoveRequest{MovementType: wire.MoveTypeGuildStorageGoldWithdraw, GoldAmount: 1}); out.Frames[0].Payload[0] == 1 {
 		t.Fatal("a closed room paid out")
+	}
+}
+
+/*
+================
+TestGuildDeltasGoThroughTheGuildPublication
+
+The master's handover publishes its four 0x3B29 deltas to the heir through
+PushGuildFrames, naming the guild, so a session without that guild's block
+never receives them (guild/baseline.go); none goes out as plain character
+frames.
+================
+*/
+func TestGuildDeltasGoThroughTheGuildPublication(t *testing.T) {
+	d := guildManagerFixture(t)
+	c := d.character
+	heir := testCharacter()
+	heir.Name = "Heir"
+	if err := d.authority.CreateCharacter(testDivision, "heir-account", heir); err != nil {
+		t.Fatal(err)
+	}
+	guilds := d.authority.Guilds()
+	guildID, _ := guilds.GuildOfCharacter(testDivision, c.ID)
+	if _, refusal := guilds.AddGuildMemberAs(testDivision, guildID, c.ID, 0, enterworld.GuildMemberRecord{
+		CharID: heir.ID, JID: 2, Name: heir.Name, Grade: guild.JoinerGrade, FortressRole: guild.FortressRoleGuard}); refusal.Refused() {
+		t.Fatalf("fixture join %v", refusal)
+	}
+	d.rt.PushCharacterFrames = func(_, _ string, frames []wire.Frame) {
+		for _, frame := range frames {
+			if frame.Opcode == guild.OpGuildUpdatePush {
+				t.Fatal("a guild delta bypassed the guild publication")
+			}
+		}
+	}
+	var published []int64
+	d.rt.PushGuildFrames = func(division, name string, id int64, frames []wire.Frame) {
+		if division != testDivision || name != heir.Name {
+			t.Fatalf("delta recipient %s/%s", division, name)
+		}
+		published = append(published, id)
+	}
+	out := d.rt.HandleGuildMasterLeave(testDivision, c, wire.NewWriter(8).U32(guildManagerGid).U32(2).Payload())
+	if out.Frames[0].Opcode != opGuildMasterLeaveDone || len(published) != 1 || published[0] != guildID {
+		t.Fatalf("handover published %v for guild %d", published, guildID)
 	}
 }

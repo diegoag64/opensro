@@ -46,7 +46,8 @@ type HuntingGuideEntry struct {
 ================
 HuntingGuide
 
-Owner-approved port addition. The effective template supplies locations and
+Port-only, not native; off by default behind Experimental → World → monsterGuide.
+The effective template supplies locations and
 disabled caps. Infer a conservative beginner scope: ordinary default-world
 retail anchors only, excluding resource-authored event/development areas.
 No bounds are invented from roaming, home radii or current creature positions.

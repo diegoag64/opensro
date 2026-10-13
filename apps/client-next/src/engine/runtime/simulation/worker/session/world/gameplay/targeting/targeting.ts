@@ -8,7 +8,7 @@ remains owned until acknowledgement, so latency cannot redirect a late reply.
 
 ===========================================================================
 */
-import type { WireFrame } from "@/engine/contracts/network";
+import { TARGET_RELEASE_TIMEOUT, type WireFrame } from "@/engine/contracts/network";
 
 /*
 ================
@@ -122,7 +122,11 @@ step
 			if ( !pending || now < pending.deadline ) return false;
 			// B4B3 has no identity. Reusing this channel after a missing release
 			// could apply its late reply to a newer target: reconnect to resync.
-			if ( pending.kind === "release" ) throw new Error( "Target release timed out; reconnect to resynchronize" );
+			if ( pending.kind === "release" ) {
+				throw new Error( "Target release timed out; reconnect to resynchronize", {
+					cause: TARGET_RELEASE_TIMEOUT
+				} );
+			}
 			pending = null;
 			target = 0;
 			localSelection = false;
@@ -197,6 +201,23 @@ remove
 			}
 			// Preserve a release barrier until its untagged acknowledgement arrives.
 			if ( pending?.kind === "select" && pending.gid === gid ) pending = null;
+		},
+		/*
+================
+dismiss
+
+The target window's close (CIFTargetWindow_OnClose 582020): the window
+forgets its target and sends nothing, so the server's selection and any
+NPC function opened through it (an open warehouse) stay as they are.
+================
+		*/
+		dismiss() {
+			if ( pending ) return;
+			target = 0;
+			localSelection = false;
+			capabilities = 0;
+			taxRate = 0;
+			error = null;
 		},
 		/*
 ================

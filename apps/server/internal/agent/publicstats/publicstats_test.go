@@ -11,7 +11,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"opensro.online/server/internal/game/social/chatfeed"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -47,7 +49,7 @@ func newFixture() *fixture {
 			{ID: 1, Name: "Kekw", ModelCodename: "CHAR_CH_MAN_ADVENTURER", Level: lvl(54), Strength: &str,
 				LevelReachedAt: map[uint8]int64{20: 1000, 30: 5000}, LastLoginAtMs: 9000,
 				Masteries:        []domain.CharacterMastery{{ID: 257, Level: 54}},
-				MissionInventory: []domain.InventoryRow{{Slot: 6, RefObjID: 3801, Plus: 7}, {Slot: 20, RefObjID: 99}}},
+				MissionInventory: []domain.InventoryRow{{Slot: 6, RefObjID: 3801, Plus: 7, VarianceBits: "1094795585", Durability: 48, MagicOptions: []uint64{7<<32 | 33, 20<<32 | 41}}, {Slot: 7, RefObjID: 3802}, {Slot: 20, RefObjID: 99}}},
 			{ID: 2, Name: "Lune", ModelCodename: "CHAR_EU_WOMAN_WARRIOR", Level: lvl(40), LevelReachedAt: map[uint8]int64{20: 800}},
 			{ID: 3, Name: "Shy", ModelCodename: "CHAR_CH_WOMAN_ADVENTURER", Level: lvl(60), PublicHidden: true,
 				LevelReachedAt: map[uint8]int64{20: 500, 30: 600}},
@@ -75,8 +77,8 @@ func (f *fixture) service() *Service {
 		},
 		Uniques: func() []simulation.UniqueState {
 			return []simulation.UniqueState{
-				{RefObjID: tigerRef, Codename: "MOB_CH_TIGERWOMAN", Level: 20, RegionID: 23687, Alive: true, SpawnedAtMs: 4000, RespawnMinSec: 3600, RespawnMaxSec: 7200},
-				{RefObjID: uruchiRef, Codename: "MOB_OA_URUCHI", Level: 40, RegionID: 23688, DiedAtMs: 3500, RespawnMinSec: 60, RespawnMaxSec: 120},
+				{RefObjID: tigerRef, Codename: "MOB_CH_TIGERWOMAN", Level: 20, RegionID: 23687, Alive: true, SpawnedAtMs: 4000},
+				{RefObjID: uruchiRef, Codename: "MOB_OA_URUCHI", Level: 40, RegionID: 23688},
 			}
 		},
 		UniqueName: func(ref uint32) string {
@@ -127,25 +129,63 @@ func get(t *testing.T, s *Service, path string, out any) int {
 
 /*
 ================
-TestUniquesShowStateWindowAndPrivateKiller
+TestUniquesShowStateAndPrivateKiller
 
-P1: a live unique has no window; a dead one returns between death + min and
-death + max; the last kill names a visible killer and its guild.
+P1: a unique says whether it is up and since when; the last kill names a
+visible killer and its guild.
 ================
 */
-func TestUniquesShowStateWindowAndPrivateKiller(t *testing.T) {
+func TestUniquesShowStateAndPrivateKiller(t *testing.T) {
 	var out UniquesResponse
 	if code := get(t, newFixture().service(), "/public/v1/uniques", &out); code != http.StatusOK || len(out.Uniques) != 2 {
 		t.Fatalf("uniques %d %+v", code, out)
 	}
 	tiger, uruchi := out.Uniques[0], out.Uniques[1]
-	if tiger.Name != "Tiger Girl" || !tiger.Alive || tiger.NextWin != nil || tiger.LastKill == nil ||
+	if tiger.Name != "Tiger Girl" || !tiger.Alive || tiger.SpawnedAt == nil || tiger.LastKill == nil ||
 		tiger.LastKill.Killer != "Kekw" || tiger.LastKill.Guild != "Silk" {
 		t.Fatalf("tiger %+v %+v", tiger, tiger.LastKill)
 	}
-	if uruchi.Name != "MOB_OA_URUCHI" || uruchi.Alive || uruchi.NextWin == nil ||
-		uruchi.NextWin.OpensAt != rfc3339(3500+60_000) || uruchi.NextWin.ClosesAt != rfc3339(3500+120_000) {
-		t.Fatalf("uruchi %+v %+v", uruchi, uruchi.NextWin)
+	if uruchi.Name != "MOB_OA_URUCHI" || uruchi.Alive || uruchi.SpawnedAt != nil {
+		t.Fatalf("uruchi %+v", uruchi)
+	}
+}
+
+/*
+================
+TestUniquesKeepTheRespawnSecret
+
+When a unique returns is a secret: neither a live nor a dead unique's row,
+nor the published schema, carries a respawn delay or a return window.
+================
+*/
+func TestUniquesKeepTheRespawnSecret(t *testing.T) {
+	s := newFixture().service()
+	var raw struct {
+		Uniques []map[string]json.RawMessage `json:"uniques"`
+	}
+	if code := get(t, s, "/public/v1/uniques", &raw); code != http.StatusOK || len(raw.Uniques) != 2 {
+		t.Fatalf("uniques %d %+v", code, raw)
+	}
+	want := []string{"alive", "lastKill", "level", "name", "refObjId", "regionId", "spawnedAt"}
+	for _, row := range raw.Uniques {
+		keys := make([]string, 0, len(row))
+		for key := range row {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		if !reflect.DeepEqual(keys, want) {
+			t.Fatalf("unique row keys %v, want %v", keys, want)
+		}
+	}
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/public/v1/schema", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"spawnedAt"`) {
+		t.Fatalf("schema %d %s", rec.Code, rec.Body.String())
+	}
+	for _, secret := range []string{"respawn", "nextWindow", "opensAt", "closesAt"} {
+		if strings.Contains(rec.Body.String(), `"`+secret+`"`) {
+			t.Fatalf("schema publishes %q", secret)
+		}
 	}
 }
 
@@ -218,8 +258,17 @@ func TestProfileCarriesLookStatsAndCounts(t *testing.T) {
 		p.Stats.Str != 120 || len(p.Masteries) != 1 || p.UniqueKills != 2 || !p.Online || p.LastLogin == nil {
 		t.Fatalf("profile %+v", p)
 	}
-	if len(p.Look.Worn) != 1 || p.Look.Worn[0].RefItemID != 3801 || p.Look.Worn[0].Plus != 7 || p.Look.BodyCodename != "CHAR_CH_MAN_ADVENTURER" {
+	if len(p.Look.Worn) != 2 || p.Look.Worn[0].RefItemID != 3801 || p.Look.Worn[0].Plus != 7 || p.Look.BodyCodename != "CHAR_CH_MAN_ADVENTURER" {
 		t.Fatalf("look %+v", p.Look)
+	}
+	// The tooltip's own inputs: the white-stat roll, durability and blue stats.
+	if w := p.Look.Worn[0]; w.Variance != "1094795585" || w.Durability == nil || *w.Durability != 48 ||
+		len(w.MagicOptions) != 2 || w.MagicOptions[0] != "30064771105" || w.MagicOptions[1] != "85899345961" {
+		t.Fatalf("worn item %+v", w)
+	}
+	// A broken item (durability 0) still says so: absent would read as full.
+	if w := p.Look.Worn[1]; w.Durability == nil || *w.Durability != 0 {
+		t.Fatalf("broken item %+v", w)
 	}
 	if code := get(t, newFixture().service(), "/public/v1/characters/nobody", nil); code != http.StatusNotFound {
 		t.Fatalf("unknown profile %d", code)
@@ -286,6 +335,11 @@ this pins the generator, not a hand-copied list.
 */
 func TestSchemaDescribesEveryEncodedAnswer(t *testing.T) {
 	s := privacyService(newFixture(), testWriteToken)
+	// A named line and a notice, so both forms of character meet the schema.
+	s.src.Chat = func() []chatfeed.Line {
+		return []chatfeed.Line{{At: time.UnixMilli(1000), Kind: chatfeed.KindChat, Character: "Kekw", Text: "hi"},
+			{At: time.UnixMilli(2000), Kind: chatfeed.KindNotice, Text: "Maintenance"}}
+	}
 	var doc map[string]any
 	get(t, s, "/public/v1/schema", &doc)
 	endpoints, _ := doc["endpoints"].(map[string]any)
@@ -301,6 +355,7 @@ func TestSchemaDescribesEveryEncodedAnswer(t *testing.T) {
 		"/public/v1/status":               "/public/v1/status",
 		"/public/v1/schedule":             "/public/v1/schedule",
 		"/public/v1/rankings":             "/public/v1/rankings?by=gear",
+		"/public/v1/chat":                 "/public/v1/chat",
 	}
 	if len(endpoints) != len(samples) {
 		t.Fatalf("schema lists %d endpoints, want %d", len(endpoints), len(samples))

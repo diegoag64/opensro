@@ -34,7 +34,7 @@ import { createEntityMotion } from "./motion/motion";
 import type { EntityState, WorldBatch, WorldEvent } from "@/engine/contracts/world";
 import { journalCost } from "@/engine/foundation/gameplay/journal-cost";
 import { mergeGameplaySnapshots } from "@/engine/foundation/gameplay/gameplay-snapshot";
-import type { WireFrame } from "@/engine/contracts/network";
+import type { Degradation, WireFrame } from "@/engine/contracts/network";
 import { SYSTEM_PET_APPEAR } from "@/engine/contracts/orb";
 import { STALL_TITLE_MODE } from "@/engine/foundation/gameplay/interaction-approach";
 import { JOB_SUIT_SLOT, partyActiveJob } from "@/engine/foundation/gameplay/party-matching";
@@ -43,6 +43,8 @@ import { JOB_SUIT_SLOT, partyActiveJob } from "@/engine/foundation/gameplay/part
 const CHARACTER_KINDS = new Set( [ "player", "local-player", "npc", "monster", "cos", "structure" ] );
 // Peer appearance slot 6 selects the overhead title; STALL_TITLE_MODE owns a stall.
 const STALL_TITLE_SLOT = 6;
+// Skipped cosmetic steps held between world takes (degrade).
+const MAX_PENDING_DEGRADATIONS = 64;
 // Wire authorities: server enterworld/{register,bootstrap,wire}.go,
 // world/simulation/{npc,monster}.go and item/wire/objectmove.go.
 /*
@@ -83,6 +85,8 @@ export function createEntities(
 	let dropSource = 0;
 	let epoch = 0, sequence = 0, inflight: WorldBatch | null = null, bytes = 0;
 	let events: WorldEvent[] = [], staged: WorldEvent[] | null = null, remaining = 0, stagedBytes = 0;
+	// Cosmetic steps skipped since the world owner last took them (Degradation).
+	let degradations: Degradation[] = [];
 	// Only locally sampled coordinates are replaceable. Wire state/lifecycle
 	// events remain reliable barriers; never mutate an already offered batch.
 	const pendingPoses = new Map<number, { index: number; size: number; }>();
@@ -106,6 +110,17 @@ export function createEntities(
 	append
 	================
 	*/
+	/*
+	================
+	degrade
+
+	Records a skipped cosmetic step; the queue is bounded so an undrained
+	owner cannot grow it (the world reports each code once anyway).
+	================
+	*/
+	function degrade( degradation: Degradation ) {
+		if ( degradations.length < MAX_PENDING_DEGRADATIONS ) degradations.push( degradation );
+	}
 	function append( event: WorldEvent, size = cost( event ) ) {
 		if ( events.length + (staged?.length ?? 0) >= 8192 || bytes + stagedBytes + size > journalByteLimit ) {
 			// Failure-only census distinguishes a stalled consumer from an
@@ -200,6 +215,21 @@ export function createEntities(
 	}
 	/*
 	================
+	retire
+
+	Removes the entity a duplicate spawn replaces. Presentation sees the
+	despawn so the old actor fades; gameplay does not, because native only
+	overwrites the gid's slot: a selected target, a queued skill, an open NPC
+	dialog and the HP record all survive, and riders keep mountedOn.
+	================
+	*/
+	function retire( gid: number ) {
+		entities.delete( gid );
+		motion.remove( gid );
+		append( { kind: "despawn", gid } );
+	}
+	/*
+	================
 	apply
 	================
 	*/
@@ -210,9 +240,12 @@ export function createEntities(
 			const refresh = e.kind === "player" || e.kind === "local-player" || isNameColorGuard( e ) ||
 				e.kind === "cos" && e.pvpState !== undefined;
 			if ( c && refresh ) event = { ...event, entity: { ...e, nameColor: refreshNameColor( e, c ) } };
-			if ( entities.has( event.entity.gid ) ) {
-				throw new Error( "Duplicate entity spawn" );
-			}
+			// CIGIDObject_RegisterGid (852CA0) only debug-asserts a gid it
+			// already holds, then g_sHashGID keeps the newer object: a second
+			// spawn replaces the first and never ends the session. The old
+			// entity is retired so its visual and motion do not linger; riders
+			// keep mountedOn because the same gid returns at once.
+			if ( entities.has( event.entity.gid ) ) retire( event.entity.gid );
 			if ( entities.size >= 16384 ) {
 				throw new Error( "Entity limit exceeded" );
 			}
@@ -650,7 +683,17 @@ export function createEntities(
 				const source = entities.get( v.getUint32( 0, true ) ), item = v.getUint32( 4, true );
 				if ( item === 0 || !source || source.groundItem ) return;
 				const typeFlags = itemRefs.get( item );
-				if ( typeFlags === undefined ) throw Error( "Missing external item reference " + item );
+				if ( typeFlags === undefined ) {
+					// The effect is cosmetic and the payload a fixed 8 bytes: skip the
+					// sparkle, keep the session, and report it (native 74F540 would
+					// crash on the unresolved record; the port degrades instead).
+					degrade( {
+						code: "item-use-visual-unknown-ref",
+						message: "Missing external item reference " + item,
+						frame
+					} );
+					return;
+				}
 				append( { kind: "item-effect", source: { ...source }, item, typeFlags } );
 				return;
 			}
@@ -1229,6 +1272,19 @@ export function createEntities(
 		},
 		/*
 		================
+		takeDegradations
+
+		The cosmetic steps skipped since the last take, for the world owner's
+		non-fatal reports.
+		================
+		*/
+		takeDegradations(): Degradation[] {
+			const taken = degradations;
+			degradations = [];
+			return taken;
+		},
+		/*
+		================
 		take
 		================
 		*/
@@ -1305,6 +1361,20 @@ export function createEntities(
 		*/
 		rider( gid: number ) {
 			for ( const entity of entities.values() ) if ( entity.mountedOn === gid ) return entity;
+			return undefined;
+		},
+		/*
+		================
+		playerNamed
+
+		The visible player of this name (EntityManager_FindGidByName, as the
+		chat commands read it).
+		================
+		*/
+		playerNamed( name: string ) {
+			for ( const entity of entities.values() ) {
+				if ( entity.kind === "player" && entity.name === name ) return entity;
+			}
 			return undefined;
 		},
 		/*

@@ -76,6 +76,9 @@ export interface UiQuad {
 		// Port-only: the 3D viewer's framing camera (viewer-camera.ts). Absent,
 		// the doll keeps the inventory's fixed camera.
 		readonly camera?: import("./scene").WorldCamera;
+		// Port-only: draw the actor's linked ride with it (the viewer's
+		// riding uniques). The inventory and party portraits never show one.
+		readonly mount?: boolean;
 	};
 	readonly worldAnchor?: Omit<import("./gameplay").Pose, "angle">;
 	readonly portraitGid?: number;
@@ -137,6 +140,7 @@ UiControl
 export interface UiControl {
 	// Optional convex hit outline in the same absolute UI coordinates as rect.
 	readonly hitPolygon?: readonly (readonly [number, number])[];
+	readonly multiline?: boolean;
 	readonly valueText?: string;
 	readonly whisperTarget?: string;
 	readonly textAlign?: "left" | "center" | "right";
@@ -168,6 +172,8 @@ UiSemantics
 export interface UiSemantics {
 	readonly loadingVisible?: boolean;
 	readonly hudCorner?: UiRect;
+	/** Top of the port-only tool row, clear of native player, target and companion chrome. */
+	readonly hudToolsTop?: number;
 	readonly focusRequest?: {
 		readonly id: string | null;
 		readonly revision: number;
@@ -219,7 +225,15 @@ export type UiEvent =
 		alt?: boolean;
 	}
 	| { kind: "hover" | "press"; id: string | null; }
-	| { kind: "edit"; id: string; value: string; start: number; end: number; composing: boolean; }
+	| {
+		kind: "edit";
+		id: string;
+		value: string;
+		start: number;
+		end: number;
+		direction?: "forward" | "backward" | "none";
+		composing: boolean;
+	}
 	| { kind: "focus"; id: string | null; }
 	| { kind: "key"; code: string; shift?: boolean; ctrl?: boolean; };
 /*

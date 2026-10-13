@@ -44,6 +44,10 @@ export type SessionCommand =
 	| WorldExitCommand
 	| { readonly kind: "chat-blocks"; readonly value: readonly string[]; }
 	| {
+		readonly kind: "experimental-gameplay";
+		readonly value: import("@/engine/foundation/ui/experimental-options").ExperimentalGameplay;
+	}
+	| {
 		readonly kind: "game-options";
 		readonly value: import("@/engine/foundation/gameplay/game-options").GameOptions;
 	}
@@ -108,6 +112,8 @@ export interface SessionOwner {
 	command( command: SessionCommand, now?: number ): void;
 	step( now?: number ): SessionState | null;
 	takeWorld(): import("./world").WorldBatch | null;
+	// The transport's frame journal since the last take (NetworkOwner.takeJournal).
+	takeNetJournal(): Float64Array | null;
 	ackWorld( sequence: number ): void;
 	dispose(): void;
 }

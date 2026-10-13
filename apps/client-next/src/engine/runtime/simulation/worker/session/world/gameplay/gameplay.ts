@@ -191,6 +191,7 @@ import {
 	cosGroundRequest,
 	cosGroundResult
 } from "@/engine/foundation/gameplay/cos-container";
+import { ownCastTarget, petAssistOrders, retainedPetAssists } from "@/engine/foundation/gameplay/pet-assist";
 import { cosBehaviorResult, applyCosBehavior, cosBehaviorRequest } from "@/engine/foundation/gameplay/cos-behavior";
 import { createFeedback } from "./feedback/feedback";
 import { saleResult, soldInventory, commerceJson, commerceInteger } from "@/engine/foundation/gameplay/commerce";
@@ -286,6 +287,10 @@ const PICKUP_EXECUTE_RANGE = 10;
 // How long past two round trips a sent skill press's cooldown stand-in waits
 // for its answer.
 const SKILL_ANSWER_SLACK_MS = 500;
+// A skill run-up is predicted only this far beyond the authored range: the
+// server's reach adds both bodies to it, so a target nearer than that may be
+// in its reach already and the server casts without walking.
+const SKILL_RUN_UP_MARGIN = 20;
 // Movement mode 4 is seated (motion 4, which 58E0BF refuses ao/pw from).
 const MOVEMENT_SEATED = 4;
 // B2CD kind 1 admits a command (75BAA0); count 2 queues it behind an open one.
@@ -296,6 +301,8 @@ const ITEM_INTERACTION_REFUSAL = 0x35;
 // 6FCD50's skill-use notices: category 4, code 0x21 refuses a rider.
 const SKILL_NOTICE_CATEGORY = 4;
 const SKILL_RIDING_REFUSAL = 0x21;
+// Server 0x3011 (529D6D), the victim's death kind; CPSMission 74FE50 here.
+const DEATH_NOTICE = 0x37ce;
 
 /*
 ================
@@ -398,6 +405,28 @@ sendFrame
 		}
 		return frame;
 	}
+	// Off from a bootstrap until the world is ready (0x3012): the loading
+	// screen, where native runs no game loop. The server discards requests
+	// sent then (hubHandler), so a request a received packet triggers on its
+	// own waits here and leaves on the first tick after loading.
+	let live = false;
+	let deferredSends: { frame: WireFrame; tracked: boolean; }[] = [];
+	/*
+================
+sendWhenLive
+
+A request no command asked for: sent now in the world, held while loading.
+tracked routes it through sendFrame's pickup and press bookkeeping.
+================
+	*/
+	function sendWhenLive( frame: WireFrame, tracked = false ) {
+		if ( !live ) {
+			deferredSends.push( { frame, tracked } );
+			return;
+		}
+		if ( tracked ) sendFrame( frame );
+		else send( frame );
+	}
 	/*
 ================
 sendSkillPress
@@ -478,6 +507,46 @@ range: unknown, so not within.
 		const dx = target.x - pose.x + ((target.regionId & 255) - (pose.regionId & 255)) * 1920,
 			dz = target.z - pose.z + ((target.regionId >>> 8) - (pose.regionId >>> 8)) * 1920;
 		return Math.hypot( dx, dz ) <= metadata.range;
+	}
+	/*
+================
+skillRunUpGoal
+
+Port-only, not native, and off by default (the Experimental window's
+Predicted run-up row). Where an admitted press on a target beyond reach
+walks the caster before its cast. The native press (6FCD50) reads no
+range: it sends the command and the server's movement acknowledgement
+walks the caster into reach (58D8F0), one round trip after the press,
+which never jumps. The prediction starts the walk at the press instead,
+but the server casts where it enters its combat spacing (both bodies plus
+the reach) while the predicted walk runs on, so the cast pulls the caster
+back. The goal stands at the authored range on the line to the target;
+the server's own walk is adopted when it arrives. Only from rest, on foot,
+alive, with no cast in flight, and within one region.
+================
+	*/
+	function skillRunUpGoal(
+		metadata: SkillMetadata | undefined,
+		target: EntityState,
+		local: EntityState | undefined,
+		now: number
+	): import("@/engine/contracts/gameplay").Pose | null {
+		const walking = movement.state(), pose = walking.pose;
+		if (
+			!predictedRunUp || !metadata?.range || !pose || walking.moving || !local || local.mountedOn ||
+			local.appearanceState?.[0] === 2 || localCastHolds( now ) || target.regionId !== pose.regionId ||
+			target.kind === "monster" && target.appearanceState?.[0] === 2
+		) return null;
+		const dx = target.x - pose.x, dz = target.z - pose.z, distance = Math.hypot( dx, dz );
+		if ( distance <= metadata.range + SKILL_RUN_UP_MARGIN ) return null;
+		const walk = (distance - metadata.range) / distance;
+		return {
+			regionId: pose.regionId,
+			x: pose.x + dx * walk,
+			y: target.y,
+			z: pose.z + dz * walk,
+			angle: pose.angle
+		};
 	}
 	/*
 ================
@@ -584,6 +653,8 @@ attack can arrive in the same batch as the previous close and starve the walk.
 	const cosItemRefs = new Map<number, number>(), cosItemCaps = new Map<number, number>();
 	const cosRefs = new Map<number, number>(),
 		cosRecords = new Map<number, import("@/engine/contracts/gameplay").CosRecord>();
+	// Each owned attack pet's assist target (+0xAB2C, pet-assist.ts).
+	let petAssists: ReadonlyMap<number, number> = new Map();
 	let uniqueRefs = uniqueReferences( {} );
 	let gmReplies: readonly (GmReply & { sequence: number; })[] = [];
 	let gmSequence = 0;
@@ -653,8 +724,15 @@ fails; retry persistence without restoring stale slot occupancy.
 		}
 	}
 	let worldClock: GameplayState["worldClock"];
+	// CGInterface+0x640: the death kind the 0x37CE notice carries (74FE50 ->
+	// 67B2E0). The death box labels its first button from it; every death
+	// sends a fresh one, so a revival leaves it alone, as natively.
+	let rebirthMode = 0;
 	let environment = entryEnvironment( {} ).state;
 	let cosError: string | null = null;
+	// The skill a predicted run-up was pressed for (skillRunUpGoal), and
+	// whether the Experimental row predicts run-ups at all.
+	let runUpSkill = 0, predictedRunUp = false;
 	let approach: InteractionApproachState = { phase: "idle" };
 	let returnScroll: ReturnScrollCast | undefined, teleportMode = 0;
 	const cosSelection = createCosSelection();
@@ -681,6 +759,10 @@ reuse gate as manual activation. Recovery completion is server-owned.
 ================
 	*/
 	function checkAutomaticPotion( kind: 0 | 1 | 2, now: number, event: "vitals" | "timer" ) {
+		// An item use opens an inventory transaction with a deadline: none
+		// starts on the loading screen. The server pushes vitals at game-ready,
+		// which re-evaluates every channel once the world is live.
+		if ( !live ) return;
 		const result = checkAutoPotionTimer( potionTimers[kind], {
 			kind,
 			settings: autoPotion,
@@ -919,6 +1001,7 @@ selected entities, cooldowns or world-entry state.
 		jobRanks = { lists: [], opened: null };
 		jobOutcome = null;
 		cosRecords.clear();
+		petAssists = new Map();
 		cosSelection.reset();
 		cosRefs.clear();
 		cosItemRefs.clear();
@@ -975,6 +1058,16 @@ options
 		},
 		/*
 ================
+experimental
+
+The Experimental window's gameplay rows (experimentalGameplay).
+================
+		*/
+		experimental( value: import("@/engine/foundation/ui/experimental-options").ExperimentalGameplay ) {
+			predictedRunUp = value.predictedRunUp === true;
+		},
+		/*
+================
 bootstrap
 
 Validate authoritative entry data before exposing character facts. Live
@@ -991,6 +1084,10 @@ resends nothing. Wiping them here made the next 0x3E58 type-6 row throw
 ================
 		*/
 		bootstrap( value: unknown, continued = false, receivedAtMs = 0 ) {
+			live = false;
+			deferredSends = [];
+			// A new login builds a new CGInterface, whose +0x640 starts at zero.
+			if ( !continued ) rebirthMode = 0;
 			pickup.clear();
 			cosPickup.clear();
 			approach = interactionApproachTransition( approach, { kind: "cancel" } );
@@ -1106,6 +1203,7 @@ resends nothing. Wiping them here made the next 0x3E58 type-6 row throw
 			cosResult = undefined;
 			cosError = null;
 			cosRecords.clear();
+			petAssists = new Map();
 			cosSelection.reset();
 			cosRefs.clear();
 			cosItemRefs.clear();
@@ -1867,6 +1965,12 @@ state here before a command can claim a native wire conversation.
 				const payload = new Uint8Array( 5 );
 				new DataView( payload.buffer ).setUint32( 0, record.gid, true );
 				payload[4] = 9;
+				// 6A2350 tag 9 clears the assist target (+0xAB2C).
+				if ( petAssists.has( record.gid ) ) {
+					const next = new Map( petAssists );
+					next.delete( record.gid );
+					petAssists = next;
+				}
 				return sendFrame( { opcode: 0x769e, payload } );
 			}
 			if ( command.kind === "cos-pet-attack" ) {
@@ -1886,6 +1990,7 @@ state here before a command can claim a native wire conversation.
 				v.setUint32( 0, record.gid, true );
 				payload[4] = 2;
 				v.setUint32( 5, entity.gid, true );
+				petAssists = new Map( petAssists ).set( record.gid, entity.gid );
 				return sendFrame( { opcode: 0x769e, payload } );
 			}
 			if ( command.kind === "cos-clean" ) {
@@ -2295,10 +2400,14 @@ state here before a command can claim a native wire conversation.
 				return null;
 			}
 			if ( command.kind === "release-target" ) {
+				// The target window's X (582020) sends no release (0x74B3 goes
+				// out only when an NPC window closes, 693790): the server keeps
+				// the selection, so an open warehouse stays usable.
 				if ( skillPress.cancel() ) dirty = true;
-				const frame = targeting.release( now );
+				targeting.dismiss();
 				npcConversation.clear();
-				return frame;
+				dirty = true;
+				return null;
 			}
 			if ( command.kind === "skill" ) {
 				const skillId = command.skillId;
@@ -2453,7 +2562,17 @@ state here before a command can claim a native wire conversation.
 			const admitted = !!pressedMetadata && skillAdmitsPredictedTarget( pressedMetadata, entity, localGid );
 			// Admission precedes the server's movement-to-cast handoff. A refused
 			// or unknown press must not stop a walk while its answer is in flight.
-			if ( admitted && pressAdmitted( pressedMetadata, local ) ) movement.holdForCast( now );
+			if ( admitted && pressAdmitted( pressedMetadata, local ) ) {
+				// A repeated press during a predicted run-up keeps it walking:
+				// holding a client-led run-up would park it until the server's
+				// walk arrived, the very lag the prediction removes.
+				const runUp = entity.gid !== localGid ? skillRunUpGoal( pressedMetadata, entity, local, now ) : null;
+				if ( movement.approachPredictedSince() !== undefined ) {
+					// The repeated press now owns the run-up's cast.
+					runUpSkill = pressedSkill;
+				} else if ( runUp && movement.predictApproach( runUp, now, true ) ) runUpSkill = pressedSkill;
+				else movement.holdForCast( now );
+			}
 			predictCast( pressedMetadata, entity, local, now );
 			// Only a target the row admits stands a cooldown in: any other is the
 			// server's to refuse, and its stand-in showed a cooldown that vanished.
@@ -2539,6 +2658,12 @@ Packet handling must not depend on which HUD panel is currently open.
 					);
 				}
 				if ( betaMap.receive( frame ) ) {
+					dirty = true;
+					return true;
+				}
+				if ( frame.opcode === DEATH_NOTICE ) {
+					if ( frame.payload.length !== 1 ) throw Error( "Invalid death notice" );
+					rebirthMode = frame.payload[0]!;
 					dirty = true;
 					return true;
 				}
@@ -2650,7 +2775,7 @@ Packet handling must not depend on which HUD panel is currently open.
 							kind: "party-match-join",
 							id: id!
 						}, now );
-						if ( continuation.frame ) send( continuation.frame );
+						if ( continuation.frame ) sendWhenLive( continuation.frame );
 						partyMatching = continuation.state;
 					} else partyMatching = matched;
 					dirty = true;
@@ -2998,7 +3123,9 @@ Packet handling must not depend on which HUD panel is currently open.
 						((social.invitation.type === 1 && !options.exchangeRequests) ||
 							([ 2, 3 ].includes( social.invitation.type ) && !options.partyInvites))
 					) {
-						send( socialRequest( social, { kind: "social-consent", accept: false, automatic: true } ) );
+						sendWhenLive(
+							socialRequest( social, { kind: "social-consent", accept: false, automatic: true } )
+						);
 						social = { ...social, invitation: null };
 					}
 					dirty = true;
@@ -3036,7 +3163,7 @@ Packet handling must not depend on which HUD panel is currently open.
 							for ( const slot of nextBindings.quickSlots ) {
 								const previous = bindings.quickSlots.find( row => row.slot === slot.slot );
 								if ( previous?.kind !== slot.kind || previous.payload !== slot.payload ) {
-									send( quickSlotPacket( slot ) );
+									sendWhenLive( quickSlotPacket( slot ) );
 								}
 							}
 							bindings = nextBindings;
@@ -3107,7 +3234,7 @@ Packet handling must not depend on which HUD panel is currently open.
 					// affected slot, including the extended bar, through 7541.
 					for ( const row of bindings.quickSlots ) {
 						if ( row.kind === 0x49 && replaced.has( row.payload ) ) {
-							send( quickSlotPacket( { ...row, payload: id } ) );
+							sendWhenLive( quickSlotPacket( { ...row, payload: id } ) );
 						}
 					}
 					bindings = {
@@ -3238,7 +3365,7 @@ Packet handling must not depend on which HUD panel is currently open.
 					if ( cosPickup.result( cosResult, now ) ) {
 						const record = cosRecords.get( cosResult.gid );
 						if ( record && !record.dead && record.hp && record.commandMode !== undefined ) {
-							sendFrame( cosBehaviorRequest( record, record.commandMode & ~0x80 ) );
+							sendWhenLive( cosBehaviorRequest( record, record.commandMode & ~0x80 ), true );
 						}
 					}
 					dirty = true;
@@ -3434,6 +3561,20 @@ Packet handling must not depend on which HUD panel is currently open.
 					} ),
 					target = targeting.receive( frame.opcode, frame.payload ),
 					fight = combat.receive( frame.opcode, frame.payload, now );
+				if ( fight && frame.opcode === 0xb245 ) {
+					// 776830: the local player's own cast of a skill that assists,
+					// at a target in the world, sends its attack pets in.
+					const cast = ownCastTarget( frame.payload, localGid );
+					if ( cast && cast.target && combat.assistsCompanions( cast.skill ) && readEntity( cast.target ) ) {
+						const pets = [ ...cosRecords.values() ].map( record => ({
+							...record,
+							present: readEntity( record.gid ) !== undefined
+						}) );
+						const assist = petAssistOrders( cast.target, pets, petAssists );
+						petAssists = assist.assisting;
+						for ( const order of assist.orders ) sendWhenLive( order, true );
+					}
+				}
 				if (
 					fight && frame.opcode === 0x33a6 &&
 					new DataView( frame.payload.buffer, frame.payload.byteOffset, frame.payload.byteLength ).getUint32(
@@ -3637,6 +3778,14 @@ before take assembles the presentation snapshot.
 ================
 		*/
 		step( now: number, local?: EntityState ) {
+			if ( petAssists.size ) {
+				const targets = new Map<number, EntityState>();
+				for ( const target of petAssists.values() ) {
+					const row = readEntity( target );
+					if ( row ) targets.set( target, row );
+				}
+				petAssists = retainedPetAssists( petAssists, new Set( cosRecords.keys() ), targets );
+			}
 			const warNext = advanceGuildWarClock( social, now );
 			if ( warNext !== social ) {
 				if ( warNext.notice ) {
@@ -3779,6 +3928,18 @@ before take assembles the presentation snapshot.
 			}
 			for ( const kind of [ 0, 1, 2 ] as const ) checkAutomaticPotion( kind, now, "timer" );
 
+			// A predicted skill run-up the server did not walk: it cast the
+			// pressed skill where the caster stood (the target was within its
+			// reach after all), or never answered. Walk back to the start the
+			// server kept. Another cast meanwhile (an imbue) is not that answer.
+			const runUpSince = movement.approachPredictedSince();
+			if (
+				runUpSince !== undefined &&
+				(combat.state().casts.some( c =>
+					c.caster === localGid && c.skill === runUpSkill && c.receivedAtMs !== undefined &&
+					c.receivedAtMs >= runUpSince && c.cancelledAtMs === undefined
+				) || now - runUpSince > 4 * skillPress.oneWayMs() + SKILL_ANSWER_SLACK_MS)
+			) movement.endPrediction( now );
 			const combatChanged = combat.step( now ), inventoryChanged = inventory.step( now );
 			const trained = training.step( now ), moved = movement.step( now ), targeted = targeting.step( now );
 			dirty = combatChanged || inventoryChanged || trained || chat.step( now ) || moved || targeted || dirty;
@@ -3932,6 +4093,7 @@ The published plane when something changed since the last take, else null.
 					};
 				} ),
 				worldClock,
+				rebirthMode,
 				weather: environment.effective,
 				eventGroups: environment.groups,
 				...quests.state(),
@@ -3963,6 +4125,8 @@ World transfer retires spatial work while retaining character/session data.
 ================
 		*/
 		resetWorld() {
+			live = false;
+			deferredSends = [];
 			actionSession.clear();
 			pickup.clear();
 			cosPickup.clear();
@@ -4004,6 +4168,7 @@ World transfer retires spatial work while retaining character/session data.
 			cosResult = undefined;
 			cosError = null;
 			cosRecords.clear();
+			petAssists = new Map();
 			cosSelection.reset();
 			dirty = true;
 		},
@@ -4013,8 +4178,24 @@ reset
 ================
 		*/
 		reset() {
+			live = false;
+			deferredSends = [];
 			clearState();
 			dirty = true;
+		},
+		/*
+================
+worldReady
+
+The loading screen retired (0x3012 sent): requests held while loading
+leave in the order their packets raised them.
+================
+		*/
+		worldReady() {
+			live = true;
+			const held = deferredSends;
+			deferredSends = [];
+			for ( const row of held ) sendWhenLive( row.frame, row.tracked );
 		},
 		/*
 ================

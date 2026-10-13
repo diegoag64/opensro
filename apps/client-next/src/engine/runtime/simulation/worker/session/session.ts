@@ -286,6 +286,10 @@ baseUrl
 				world.options( command.value );
 				return;
 			}
+			if ( command.kind === "experimental-gameplay" ) {
+				world.experimental( command.value );
+				return;
+			}
 			if ( command.kind === "cancel-character-operation" ) {
 				if ( scope === "title" && state.characterOperation?.status === "pending" ) {
 					cancelTitleRequest();
@@ -906,6 +910,7 @@ baseUrl
 			return state;
 		},
 		takeWorld: () => world.take(),
+		takeNetJournal: () => world.takeNetJournal(),
 		ackWorld: sequence => world.ack( sequence ),
 		dispose() {
 			if ( !disposed ) {

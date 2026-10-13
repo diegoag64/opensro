@@ -27,6 +27,7 @@ import {
 	skillTargetAdmission
 } from "@/engine/foundation/gameplay/player-attack";
 import { resolveNativeNotice } from "@/engine/foundation/gameplay/native-notice";
+import { partyInviteTarget, partyProposalPendingNotice } from "@/engine/foundation/gameplay/party-invite";
 import { createEntities } from "./entities/entities";
 import { createGameplay } from "./gameplay/gameplay";
 import type { WireFrame } from "@/engine/contracts/network";
@@ -351,6 +352,7 @@ the entry continues it like the one after a world transfer.
 		notice: gameplay.notice,
 		chatBlocks: gameplay.chatBlocks,
 		options: gameplay.options,
+		experimental: gameplay.experimental,
 		/*
 ================
 command
@@ -393,8 +395,26 @@ UI and quickslot commands. A skill aims at the newest selection intent
 				command = gid ? { ...press, gid } : press;
 				if ( gid && !skillAtTargetAdmitted( gid, command.skillId, command.alt ?? false ) ) return;
 			}
+			// 6FD830 / 6FDA50: an invitation goes to a player, a ridden horse's
+			// rider for the horse, and the proposer's line names the invitee.
+			let invitee: EntityState | null = null;
+			if ( command.kind === "party-invite-named" ) {
+				// 6AD990: the named player must be in view; otherwise nothing is sent.
+				const named = entities.playerNamed( command.name );
+				if ( !named ) return;
+				command = { kind: "party-invite", gid: named.gid, options: command.options };
+			}
+			if ( command.kind === "party-invite" ) {
+				invitee = partyInviteTarget( command.gid, gameplay.localIdentity(), {
+					entity: entities.read,
+					rider: entities.rider
+				} );
+				if ( !invitee ) return;
+				command = { ...command, gid: invitee.gid };
+			}
 			const target = "gid" in command && command.gid ? entities.read( command.gid ) : undefined;
 			gameplay.command( command, now, target, entities.read( gameplay.localIdentity() ) );
+			if ( invitee ) gameplay.notice( partyProposalPendingNotice( invitee.name ) );
 			if ( command.kind === "navigation" ) entities.groundSpawns();
 			if ( itemType !== undefined && isReturnScroll( itemType ) ) loadingMode = 2;
 		},
@@ -447,6 +467,8 @@ Advances entities and gameplay, then publishes the changed gameplay state.
 				publishedSocial = social;
 			}
 		},
+		// The owners' skipped cosmetic steps, for the world's degraded reports.
+		takeDegradations: () => entities.takeDegradations(),
 		readyRevision: () => pendingTravel?.revision ?? 0,
 		/*
 ================
@@ -459,6 +481,7 @@ Retail 0x72902a restores destination mode after the loading UI retires.
 			pendingTravel = null;
 			loadingMode = 2;
 			gameplay.enterMusic();
+			gameplay.worldReady();
 		},
 		/*
 ================

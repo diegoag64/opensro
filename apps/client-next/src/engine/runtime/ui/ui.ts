@@ -21,14 +21,17 @@ const ACTION_STALL_NETWORK = 1013;
 // 5A2890: a title CStringCheck_IsTextAllowed refuses raises 0x0A/0x38.
 const STALL_TITLE_REFUSED = "UIIT_MSG_FLEAMARKET_ERR_NOT_ALLOWED_FMARKETNAME";
 const STALL_PROMPT_TEXT = "stall-prompt-text";
+// pk.DeathTeam, the 0x37CE mode that labels the death box "standing" (52FF33).
+const TEAM_DEATH_MODE = 2;
 // The overhead job mark sits 4 px past the name board, which reaches 1.5 px
 // past the text (the beginner mark mirrors it at -21.5 = -20 - 1.5).
 const JOB_MARK_GAP = 5.5;
 const STALL_PROMPT_QUANTITY = "stall-prompt-quantity";
 const STALL_PROMPT_PRICE = "stall-prompt-price";
 const STALL_CHAT_TEXT = "stall-chat-text";
-// CIFChatModule rows are 16 pixels; the input row sits under them.
-const STALL_CHAT_ROW = 16;
+// CIFChatModule sets both text boxes' row pitch through 523C20(15).
+const STALL_CHAT_ROW = 15;
+const EDIT_CARET_WIDTH = 1;
 import { ACTION_FORTRESS_RETURN } from "@/engine/foundation/gameplay/fortress-return";
 import {
 	companionItemTargetCommand,
@@ -206,12 +209,14 @@ import { alchemyEffectCell, alchemyEffectTexture, alchemyResultLines } from "@/e
 import { createUnionHud } from "./hud/union-hud";
 import { createGuildWarHud } from "./hud/guild-war-hud";
 import { guildWarRequest, warScoreLimits, WAR_MAX_STAKE, WAR_UNLIMITED } from "@/engine/foundation/gameplay/guild-war";
+import { guildSelf } from "@/engine/foundation/gameplay/social-roster";
 import { createExchangeHud } from "./hud/exchange-hud";
 import {
 	createStallHud,
 	stallNetworkOrder,
 	stallPromptCommand,
 	stallPromptLive,
+	STALL_CELL_INSET,
 	STALL_CELL_PITCH_X,
 	STALL_CELL_PITCH_Y,
 	STALL_COMBO_DEGREE,
@@ -220,6 +225,7 @@ import {
 	STALL_CHAT_LIMIT,
 	STALL_PROMPT_SIZE,
 	STALL_TEXT_LIMIT,
+	STALL_TITLE_LIMIT,
 	STALL_SLOT_IMAGES,
 	stallTradingPresentation,
 	type StallNetworkSort,
@@ -242,12 +248,14 @@ import {
 	FORTRESS_WAR_APPLY_SLOT_WIDTH
 } from "@/engine/foundation/ui/fortress-war-apply";
 import { createGuildManagerHud } from "./hud/guild-manager-hud";
+import { createGuildNoticeHud } from "./hud/guild-notice-hud";
 import { createMagicOptionHud, MAGIC_OPTION_LIST_ROWS } from "./hud/magic-option-hud";
 import {
 	premiumCommand,
 	REVERSE_RETURN_LAST_DEATH,
 	REVERSE_RETURN_LAST_RECALL
 } from "@/engine/foundation/gameplay/count-job";
+import { partyChatCommand, partyChatOrder } from "@/engine/foundation/gameplay/party-chat-command";
 import {
 	AVATAR_MAGIC_OPTION_FUNCTION,
 	avatarMagicOptionCount,
@@ -258,6 +266,7 @@ import {
 import {
 	guildLevelUpPrice,
 	guildManagerRows,
+	guildTransferRefusal,
 	guildSoldierRows,
 	guildSoldierPrompt,
 	MASTER_RELEASE_VOTE
@@ -307,7 +316,9 @@ import {
 	cosStanceToggle,
 	cosStatusChrome,
 	cosStatusRatios,
-	cosStatusRect
+	cosStatusRect,
+	cosStatusRowBottom,
+	COS_STATUS_OUTLINE_MARGIN
 } from "@/engine/foundation/ui/cos-command";
 import { questObjectivePresentation } from "@/engine/foundation/ui/quest-presentation";
 import { uniqueBannerQuads } from "@/engine/foundation/ui/unique-banner";
@@ -318,7 +329,7 @@ import {
 	isMainPopupPage,
 	type MainPopupPage
 } from "@/engine/foundation/ui/main-popup";
-import { isUiPanel, type UiPanel } from "@/engine/foundation/ui/panels";
+import { closedPanel, isUiPanel, panelCloseId, type PanelCloseId, type UiPanel } from "@/engine/foundation/ui/panels";
 import { moneyPresentation } from "@/engine/foundation/ui/money-presentation";
 import { groundItemName, groundItemNameVisible } from "@/engine/foundation/ui/ground-item-label";
 import {
@@ -452,7 +463,7 @@ import {
 	type AutoPotionDraft
 } from "@/engine/foundation/gameplay/auto-potion";
 import { selectChatTab, composeChat, chatTabPrefix, chatFeedbackText } from "@/engine/foundation/ui/chat-presentation";
-import { textBoardLines, textLines } from "@/engine/foundation/ui/text-lines";
+import { textBoardLines, textBoxLines, textLines } from "@/engine/foundation/ui/text-lines";
 import { createSpeech } from "./hud/speech";
 import { createMessageScroll } from "./hud/scroll";
 import { createHudMessages } from "./hud/messages";
@@ -494,7 +505,7 @@ import { academyLayout } from "@/engine/foundation/ui/academy-layout";
 import { createGuideResources } from "./guide/resources";
 import { automaticGuide } from "@/engine/foundation/gameplay/guide";
 import {
-	missionLoadingAssets,
+	loadingArtDemand,
 	missionLoadingQuads,
 	loadingScreenQuads,
 	regionLoadingBackground,
@@ -572,6 +583,12 @@ import type { UiView, UiEvent, UiRect, UiQuad, UiControl, UiSemantics, UiScene }
 import type { EntityState } from "@/engine/contracts/world";
 import type { UiTexture } from "@/engine/contracts/texture";
 
+// A window frame's close control is named after its window: a panel's own
+// panelCloseId, or a service window's "<window>-close" (a stall visitor
+// leaves). A bare "close" is not one: shared by every frame, it was unique
+// only while a single window showed.
+type CloseControlId = PanelCloseId | `${string}-close` | "stall-leave";
+
 // CIFCosInfo_RefreshSatietyDependentStats (6A4600) font colour 0xFF999999.
 const COS_LOW_SATIETY = [ 0x99 / 255, 0x99 / 255, 0x99 / 255, 1 ] as const;
 // No video option combo is open (slot -1 is the screen-size combo).
@@ -591,6 +608,9 @@ const PARTY_MATCH_RANGE_SEPARATOR_ID = 43;
 const BUG_COMMAND = /^\/bug(?:\s+|$)/i;
 const BUG_REPORTS_DISABLED = "Bug reports are disabled on this server.";
 const BUG_REPORTS_UNAVAILABLE = "Connecting to the bug reporter; the report window opens as soon as it answers.";
+// Port-only report/diagnostic tools: paired with --hud-tools-height in loading.css.
+const HUD_TOOLS_HEIGHT = 18;
+const HUD_TOOLS_GAP = 8;
 // The skin change scroll's window (CIFChangePlayerModel).
 const SKIN_PANEL = "Skin change";
 // CIFWholeChat, the Global Chatting item's window, and its line's edit box.
@@ -834,6 +854,25 @@ export function createUi(
 	let buffDismiss: { skillId: number; instance: number; } | null = null;
 	let loading: LoadingPresentation | null = null;
 	let loadingGeneration = 0, loadingTravelRevision: number | undefined;
+	// The europe variant the next plain load draws, chosen a load ahead so
+	// only that background is kept decoded (mission-loading.ts loadingArtDemand).
+	let nextLoadingVariant = loadingVariant();
+	// A restart, exit or logout was asked for: character select or the title
+	// follows after the server's countdown, so their loading art is warmed.
+	let leaveRequested = false;
+	/*
+	================
+	takeLoadingVariant
+
+	The variant this load shows; the next one is drawn now, from the same
+	distribution native draws at the load itself.
+	================
+	*/
+	const takeLoadingVariant = () => {
+		const variant = nextLoadingVariant;
+		nextLoadingVariant = loadingVariant();
+		return variant;
+	};
 	const levels = feedbackLevels();
 	const notificationBanner = createNoticeBanner( "notificationBanner" ),
 		uniqueBanner = createUniqueBanner(),
@@ -867,6 +906,7 @@ export function createUi(
 	const grantPowerHud = createGrantPowerHud();
 	const compositeItemHud = createCompositeItemHud();
 	const guildManagerHud = createGuildManagerHud();
+	const guildNoticeHud = createGuildNoticeHud();
 	const magicOptionHud = createMagicOptionHud();
 	const slotEffects = createSlotEffectClock();
 	const spGauge = createSkillGauge();
@@ -905,6 +945,8 @@ export function createUi(
 	let rememberedMainPopup: MainPopupPage = "Character";
 	const compactHud = createCompactHud();
 	const chatScroll = createMessageScroll( "chat-scroll" ), statusScroll = createMessageScroll( "status-scroll" );
+	const stallChatScroll = createMessageScroll( "stall-chat-scroll" ),
+		stallMemberScroll = createMessageScroll( "stall-member-scroll", "head" );
 	const chatLayoutCache = createRetainedLayout<ReturnType<typeof chatLayout>>(),
 		statusLayoutCache = createRetainedLayout<ReturnType<typeof systemMessageLayout>>();
 	/*
@@ -1234,6 +1276,11 @@ export function createUi(
 	// The UI resolves the same icons on every layout; its resolver remembers them.
 	const iconPath = createIconPaths();
 	let controls: UiControl[] = [], blocks: UiRect[] = [], paths: string[] = [];
+	// The frame's item images (nativeItem): demanded like any path, but a
+	// window does not wait on them. A storage that waited on a deposited
+	// item's icon kept replaying its earlier contents, and the item stayed
+	// invisible ("I put items yet I can't see them").
+	let contentImages = new Set<string>();
 	const white = [ 1, 1, 1, 1 ] as const, gold = [ .94, .85, .63, 1 ] as const;
 	// CGWndListHost::LayoutScrollbar 6F3620: content insets also govern the scrollbar.
 	/*
@@ -1353,7 +1400,7 @@ export function createUi(
 		const world = state?.worlds.find( row => row.id === (state.worldId & 0xffff) );
 		const row = state?.fortresses.find( row => row.code === world?.code );
 		const owner = state?.wars.find( war => war.id === row?.id )?.name;
-		const member = social?.guild?.members.find( member => member.id === social.self );
+		const member = guildSelf( social );
 		return {
 			fortress: row?.id,
 			holder: !!owner && owner === social?.guild?.name,
@@ -1379,7 +1426,7 @@ export function createUi(
 		const game = view?.gameplay, state = game?.fortress, social = game?.social, kind = fortressTargetKind( target );
 		const staff = fortressStaffView();
 		if ( !kind || !state || staff.fortress === undefined ) return 0;
-		const member = social?.guild?.members.find( row => row.id === social.self );
+		const member = guildSelf( social );
 		return fortressDeleteAction( kind, {
 			war: fortressActive( state ),
 			holder: staff.holder,
@@ -1472,6 +1519,7 @@ export function createUi(
 		blockOffset = 0;
 		if ( shopDialog || shopWarning ) closeShopDialog();
 		guildDialog = "";
+		guildNoticeHud.close();
 		practice = null;
 		// 69CDF0 owns QuestInfo independently. 589660 hides main-popup pages,
 		// including Quests, without closing that details window or its prompt.
@@ -1497,6 +1545,14 @@ export function createUi(
 				if ( questDetails && (owner === "quest-details" || owner === "quest-abandon") ) continue;
 				admittedWindows.delete( owner );
 			}
+		} else if ( !(isMainPopupPage( panel ) && isMainPopupPage( next )) ) {
+			// The primary window's replay (endWindow) bridges a main popup page
+			// to the next page of the same frame while its art loads. Any other
+			// switch leaves that window: replaying it under the new panel showed
+			// it beside what now draws in its place (the Chat window's input
+			// beside the chat bar, a duplicate "chat-text", when an exchange
+			// opened the inventory before its icons had loaded).
+			admittedWindows.delete( "primary" );
 		}
 		const wasOpen = !!panel;
 		panel = next;
@@ -2318,6 +2374,10 @@ export function createUi(
 			dirty = true;
 			return;
 		}
+		// A party chat command (6AD990), parsed once from the line being sent.
+		const partyLine = id === "chat-send" ?
+			partyChatCommand( chatText.slice( chatTabPrefix( chatTab ).length ), hudCopy ) :
+			null;
 		if ( panel === "Experimental" && id.startsWith( "experimental-" ) ) {
 			const row = EXPERIMENTAL_TABS.flatMap( tab => tab.rows ).find( candidate => candidate.id === id );
 			if ( id.startsWith( "experimental-tab:" ) ) experimental.selectTab( Number( id.slice( 17 ) ) );
@@ -2567,7 +2627,7 @@ export function createUi(
 			else if ( row === "compensation" ) sendGameplay( { kind: "guild-compensation", gid: npc } );
 			else if ( row === "vote" ) {
 				const vote = social?.guild?.votes?.find( v => v.kind === MASTER_RELEASE_VOTE );
-				if ( vote ) guildManagerHud.showVote( vote.remainingMs );
+				if ( vote ) guildManagerHud.showVote( vote.id, vote.remainingMs );
 			} else if ( row === "warehouse" ) {
 				if ( !canLeavePanel() ) return;
 				sendGameplay( { kind: "storage-open-guild", gid: npc } );
@@ -2727,7 +2787,10 @@ export function createUi(
 		// CIFButtons; retail plays no click for them.
 		if ( control?.kind === "button" && !id.startsWith( "server:" ) && !id.startsWith( "map-town:" ) ) clickSound();
 		if (
-			control && (chatScroll.event( { kind: "activate", id } ) || statusScroll.event( { kind: "activate", id } ))
+			control &&
+			(chatScroll.event( { kind: "activate", id } ) || statusScroll.event( { kind: "activate", id } ) ||
+				stallChatScroll.event( { kind: "activate", id } ) ||
+				stallMemberScroll.event( { kind: "activate", id } ))
 		) {
 			dirty = true;
 			return;
@@ -3590,6 +3653,16 @@ export function createUi(
 			focusRequest = { id: null, revision: ++focusRevision, caret: 0 };
 			dirty = true;
 			return;
+		} else if ( partyLine ) {
+			// 6AD990: the party commands act on the party; they are never sent as chat.
+			const order = partyChatOrder( partyLine, view.gameplay?.social, partyOptions );
+			if ( order ) sendGameplay( order );
+			chatText = chatTabPrefix( chatTab );
+			selection = [ chatText.length, chatText.length ];
+			focus = null;
+			focusRequest = { id: null, revision: ++focusRevision, caret: 0 };
+			dirty = true;
+			return;
 		} else if ( id.startsWith( "premium-reverse:" ) ) {
 			sendGameplay( { kind: "premium-command", command: "reverse-return", choice: Number( id.slice( 16 ) ) } );
 		} else if ( id === "premium-reverse-cancel" ) sendGameplay( { kind: "premium-command-cancel" } );
@@ -3693,6 +3766,7 @@ export function createUi(
 			pending = true;
 			commands( { kind: "enter-world", character: selectedCharacter } );
 		} else if ( id === "logout" || id === "disconnect-confirm" ) {
+			leaveRequested = true;
 			commands( { kind: "logout" } );
 			password = "";
 			roster = [];
@@ -3704,15 +3778,17 @@ export function createUi(
 		} else if ( id === "disconnect" ) commands( { kind: "disconnect" } );
 		else if ( id === "system-restart" ) {
 			setPanel( "" );
+			leaveRequested = true;
 			commands( { kind: "restart" } );
 		} else if ( id === "system-exit" ) {
 			setPanel( "" );
+			leaveRequested = true;
 			commands( { kind: "exit" } );
-		} else if ( id === "close" || id === "companion-close" || id === "potion-cancel" ) {
+		} else if ( closedPanel( id ) !== undefined || id === "companion-close" || id === "potion-cancel" ) {
 			confirmDrop = "";
 			confirmAbandon = false;
-			// Closing the shop or the warehouse, or the inventory beside either,
-			// ends the NPC interaction: CIFWnd_OnInventoryOrStorageClose (5B0D20) and the
+			// Closing the shop or the warehouse, or the inventory or transport bag
+			// beside either, ends the NPC interaction: CIFWnd_OnInventoryOrStorageClose (5B0D20) and the
 			// store's own close (53D4BC) call CGInterface_SetNpcShopVisible( 0 ),
 			// which hides the talk menus and releases the NPC target (69FB95).
 			if ( panel === "Shop" || panel === "Storage" ) sendGameplay( { kind: "npc-close" } );
@@ -4111,6 +4187,7 @@ export function createUi(
 			const tab = Number( id.slice( 10 ) );
 			if ( tab === 4 ) setPanel( "Blocking" );
 			else if ( tab !== guildTab ) {
+				guildNoticeHud.close();
 				guildTab = tab;
 				socialMember = 0;
 				socialPage = 0;
@@ -4123,7 +4200,16 @@ export function createUi(
 				socialSubject = "";
 				socialContents = "";
 			}
+		} else if ( id === "guild-notice-read" ) {
+			if ( view.gameplay?.social?.guild?.contents ) {
+				grantPowerHud.close();
+				guildNoticeHud.open();
+			}
+		} else if ( id === "guild-notice-close" ) guildNoticeHud.close();
+		else if ( id === "guild-notice-scroll-up" || id === "guild-notice-scroll-down" ) {
+			guildNoticeHud.scroll( id.endsWith( "-up" ) ? -1 : 1 );
 		} else if ( id === "guild-dialog:authority" ) {
+			guildNoticeHud.close();
 			const guild = view.gameplay?.social?.guild;
 			if ( guild ) grantPowerHud.open( guild.members );
 		} else if ( id.startsWith( "guild-grant:" ) ) {
@@ -4140,6 +4226,10 @@ export function createUi(
 			guildDialog = id.slice( 13 );
 			socialSubject = view.gameplay?.social?.guild?.subject ?? "";
 			socialContents = view.gameplay?.social?.guild?.contents ?? "";
+			const member = view.gameplay?.social?.guild?.members.find( row => row.id === socialMember );
+			if ( guildDialog === "title" ) socialName = member?.grant ?? "";
+			if ( guildDialog === "role" ) socialAmount = String( member?.role ?? 0 );
+			if ( guildDialog === "donate" ) socialAmount = "";
 		} else if ( id === "guild-dialog-close" ) guildDialog = "";
 		else if ( id.startsWith( "guild-role-choice:" ) ) {
 			socialAmount = String( fortressGrantRole( Number( id.slice( 18 ) ) ) );
@@ -4626,13 +4716,40 @@ export function createUi(
 					dirty = true;
 					return;
 				}
+				if ( guildManagerHud.field()?.kind === "master-leave" && !guildManagerHud.field()?.confirmed ) {
+					const members = view?.gameplay?.social?.guild?.members.filter( m => m.grade !== 0 ) ?? [];
+					if ( event.kind === "activate" && event.id.startsWith( "guild-transfer-member:" ) ) {
+						const member = members.find( m => m.id === Number( event.id.slice( 22 ) ) );
+						if ( member ) guildManagerHud.selectTransfer( member.id, member.name );
+						dirty = true;
+						return;
+					}
+					if (
+						event.kind === "scroll" ||
+						event.kind === "activate" &&
+							[ "guild-transfer-up", "guild-transfer-down" ].includes( event.id ) ||
+						event.kind === "drag" && event.id === "guild-transfer-thumb"
+					) {
+						const delta = event.kind === "scroll" ?
+							Math.sign( event.delta ) :
+							event.kind === "drag" ?
+							event.dy * Math.max( 0, members.length - 7 ) / 116 :
+							event.id.endsWith( "-up" ) ?
+							-1 :
+							1;
+						guildManagerHud.transferPosition( members.length, delta );
+						dirty = true;
+						return;
+					}
+				}
 				if (
 					event.kind === "key" && event.code === "Enter" && !composing ||
 					event.kind === "activate" && event.id === "guild-manager-yes"
 				) {
 					dirty = true;
 					if ( guildManagerHud.vote() ) {
-						guildManagerHud.reset();
+						// 5EFF00 leaves the election open until a candidate is selected.
+						// v1.150's decoded vote state supplies no candidate list.
 						return;
 					}
 					if ( view?.session?.phase !== "world" ) return;
@@ -4653,10 +4770,21 @@ export function createUi(
 					if ( entry?.text && entry.kind === "create" ) {
 						guildManagerHud.takeField();
 						sendGameplay( { kind: "guild-create", gid: entry.npc, name: entry.text } );
-					} else if ( entry?.text ) {
-						// 5D3EB0: the master names a member; only a member may take over.
-						const member = view.gameplay?.social?.guild?.members.find( m => m.name === entry.text );
-						if ( member && member.grade !== 0 ) {
+					} else if ( entry?.member ) {
+						// 5F1D60 opens 5D3EB0's named confirmation before sending.
+						const guild = view.gameplay?.social?.guild;
+						const member = guild?.members.find( m => m.id === entry.member );
+						const master = guildSelf( view.gameplay?.social )?.grade === 0;
+						if ( member && member.grade !== 0 && master ) {
+							if ( !entry.confirmed ) {
+								const refusal = guildTransferRefusal( view.gameplay?.fortress, guild?.name ?? "" );
+								if ( refusal ) {
+									hudMessages.append( hudCopy( refusal ) );
+									return;
+								}
+								guildManagerHud.confirmTransfer();
+								return;
+							}
 							guildManagerHud.takeField();
 							sendGameplay( { kind: "guild-master-leave", gid: entry.npc, id: member.id } );
 						}
@@ -5086,7 +5214,8 @@ export function createUi(
 				return;
 			}
 			if ( event.kind === "scroll" && panel === "Guild" ) {
-				if ( grantPowerHud.isOpen() ) grantPowerHud.scroll( Math.sign( event.delta ) );
+				if ( guildNoticeHud.isOpen() ) guildNoticeHud.scroll( Math.sign( event.delta ) );
+				else if ( grantPowerHud.isOpen() ) grantPowerHud.scroll( Math.sign( event.delta ) );
 				else if ( guildTab === 2 || guildTab === 1 && guildWarHud.state().relation === 1 ) {
 					const state = guildWarHud.state(), social = view?.gameplay?.social;
 					const memberControl = controls.find( c => c.id === "war-members-up" );
@@ -5749,6 +5878,13 @@ export function createUi(
 					return;
 				}
 			}
+			if ( event.kind === "drag" && event.id === "guild-notice-scroll-thumb" && guildNoticeHud.isOpen() ) {
+				const track = controls.find( c => c.id === "guild-notice-scroll-down" );
+				const up = controls.find( c => c.id === "guild-notice-scroll-up" );
+				if ( track && up ) guildNoticeHud.drag( event.dy, track.rect[1] - up.rect[1] - 32 );
+				dirty = true;
+				return;
+			}
 			if (
 				event.kind === "drag" &&
 				[ "war-scroll-thumb", "war-members-thumb", "war-combo-thumb" ].includes( event.id ) &&
@@ -5963,6 +6099,14 @@ export function createUi(
 			// A proposal box (an invitation or the resurrection question) is modal.
 			const proposalOpen = controls.some( c => c.id === "invite-drag" || c.id === "resurrection-drag" );
 			if ( (event.kind === "drag" || event.kind === "scroll") && proposalOpen ) {
+				return;
+			}
+			if (
+				view?.session?.phase === "world" && (event.kind === "drag" || event.kind === "scroll") &&
+				controls.some( c => c.id === STALL_CHAT_TEXT ) &&
+				(stallChatScroll.event( event ) || stallMemberScroll.event( event ))
+			) {
+				dirty = true;
 				return;
 			}
 			if (
@@ -6482,7 +6626,8 @@ export function createUi(
 					selectedServer = "";
 					serversRequested = false;
 				}
-				selection = [ event.start, event.end ];
+				// Keep the normalized range in slots 0/1; slot 2 retains the browser's active endpoint.
+				selection = [ event.start, event.end, event.direction === "backward" ? event.start : event.end ];
 				composing = event.composing;
 				dirty = true;
 			} else if ( event.kind === "key" ) {
@@ -6632,6 +6777,7 @@ export function createUi(
 		================
 		*/
 		step( next: UiView, now = 0, probe?: UiFrameProbe ): UiSemantics | null {
+			if ( guildManagerHud.observeVote( next.gameplay?.social?.guild?.votes ?? [] ) ) dirty = true;
 			if ( reverseScrollHud.reconcile( next ) ) dirty = true;
 			quickslotTime = next.simulationTimeMs ?? now;
 			if (
@@ -6895,7 +7041,18 @@ export function createUi(
 			// with the default title (5A1DF0 mode 1); a stall that moved on
 			// closes its prompt.
 			const stallState = next.gameplay?.stall, stallPrompt = stallHud.prompt();
-			if ( stallState?.phase === "naming" && !stallPrompt ) {
+			const stallChat = stallHud.observeChat( stallState, next.gameplay?.chat?.lines ?? [] );
+			if ( stallChat.cleared || stallChat.appended ) {
+				stallChatScroll.reset();
+				if ( stallChat.cleared ) stallMemberScroll.reset();
+				dirty = true;
+			}
+			// 5A2890 -> 5A0F90 destroys the answered entry before the server replies.
+			// The request identity survives a coalesced naming -> none -> naming cycle.
+			if (
+				stallState?.phase === "naming" && (view?.gameplay?.stall?.phase !== "naming" ||
+					stallState.namingSequence !== view.gameplay.stall.namingSequence)
+			) {
 				openStallPrompt( {
 					kind: "title",
 					text: hudCopy( "UIIT_STT_STALL_DEFAULT_TITLE" ).replace( "%s", next.session?.character ?? "" )
@@ -7411,6 +7568,7 @@ export function createUi(
 			controls = [];
 			blocks = [];
 			paths = [ ...commonWindowPaths ];
+			contentImages = new Set();
 			const fontPath = text.path();
 			if ( fontPath ) paths.push( fontPath );
 			const w = next.width, h = next.height, full: UiRect = [ 0, 0, w, h ];
@@ -7549,12 +7707,13 @@ export function createUi(
 			*/
 			function endWindow( mark: readonly [number, number, number, number], owner = "primary" ) {
 				const admittedWindow = admittedWindows.get( owner );
-				windowMissing.push( ...paths.slice( mark[3] ).filter( path => !resources.has( path ) ) );
+				// Everything still loading is reported (tests wait on it before a raster);
+				// only the window's own art holds its admission.
+				const unloaded = paths.slice( mark[3] ).filter( path => !resources.has( path ) );
+				windowMissing.push( ...unloaded );
+				const gaps = unloaded.filter( path => !contentImages.has( path ) );
 				const key = phase + ":" + w + ":" + h;
-				if (
-					!fontPath || !resources.has( fontPath ) ||
-					paths.slice( mark[3] ).some( path => !resources.has( path ) )
-				) {
+				if ( !fontPath || !resources.has( fontPath ) || gaps.length ) {
 					quads.length = mark[0];
 					controls.length = mark[1];
 					blocks.length = mark[2];
@@ -7567,7 +7726,9 @@ export function createUi(
 						controls.push(
 							...admittedWindow.controls.map( c => ({
 								...c,
-								disabled: c.id === "close" || c.id.startsWith( "select-window:" ) ? c.disabled : true
+								disabled: closedPanel( c.id ) !== undefined || c.id.startsWith( "select-window:" ) ?
+									c.disabled :
+									true
 							}) )
 						);
 					}
@@ -7656,7 +7817,7 @@ export function createUi(
 			closeButton
 			================
 			*/
-			function closeButton( x: number, y: number, id = "close" ) {
+			function closeButton( x: number, y: number, id: CloseControlId ) {
 				const r: UiRect = [ x, y, 16, 16 ];
 				blocks.push( r );
 				controls.push( { id, label: "Close", rect: r, kind: "button" } );
@@ -7698,7 +7859,15 @@ export function createUi(
 					const [x, y] = r;
 					statusBottom = Math.max( statusBottom, y + r[3] );
 					if ( record.gid === cosHud.selected() ) {
-						image( [ x - 11, y - 11, chrome.outlineSize[0], chrome.outlineSize[1] ], chrome.outline );
+						image(
+							[
+								x - COS_STATUS_OUTLINE_MARGIN,
+								y - COS_STATUS_OUTLINE_MARGIN,
+								chrome.outlineSize[0],
+								chrome.outlineSize[1]
+							],
+							chrome.outline
+						);
 					}
 					image( r, chrome.frame );
 					const icon = iconPath( reference?.icon );
@@ -7868,14 +8037,28 @@ export function createUi(
 			/*
 			================
 			authoredText
+
+			A static's text in its client rect. clipToControl keeps it inside
+			that rect: true ends a long line with an ellipsis, "clip" cuts it
+			at the edge.
 			================
 			*/
-			function authoredText( node: AuthoredControl, ox: number, oy: number, value: string ) {
+			function authoredText(
+				node: AuthoredControl,
+				ox: number,
+				oy: number,
+				value: string,
+				clipToControl: boolean | "clip" = false
+			) {
+				const box = authoredClientRect( node, ox, oy );
 				quads.push(
-					...text.quads( value, authoredClientRect( node, ox, oy ), full, node.color, {
+					...text.quads( value, box, clipToControl ? box : full, node.color, {
 						fontIndex: node.fontIndex,
 						hAlign: node.hAlign,
-						vAlign: node.vAlign
+						vAlign: node.vAlign,
+						...(clipToControl ?
+							{ overflow: clipToControl === "clip" ? "clip" as const : "ellipsis" as const } :
+							{})
 					} )
 				);
 			}
@@ -8105,20 +8288,121 @@ export function createUi(
 				oy: number,
 				id: string,
 				value: string,
-				maxLength: number
+				maxLength: number,
+				native = false
 			) {
-				const r = authoredRect( node, ox, oy );
-				controls.push( { id, label: node.name, kind: "text", value, rect: r, maxLength } );
+				const multiline = id === "social-contents";
+				if ( multiline ) {
+					// The guild notice editor (#710): a left-aligned multiline board.
+					const r = authoredRect( node, ox, oy );
+					controls.push( {
+						id,
+						label: node.name,
+						kind: "text",
+						value,
+						rect: r,
+						maxLength,
+						multiline: true,
+						textAlign: "left"
+					} );
+					const LINE_HEIGHT = 16;
+					const measure = ( line: string ) => text.run( line ).width,
+						lines = textBoardLines( value, r[2], measure ),
+						start = Math.min( value.length, selection[0] ?? 0 ),
+						end = Math.min( value.length, selection[1] ?? start ),
+						caretLines = textBoardLines( value.slice( 0, end ), r[2], measure ),
+						capacity = Math.max( 1, Math.floor( r[3] / LINE_HEIGHT ) ),
+						first = focus === id ? Math.max( 0, caretLines.length - capacity ) : 0;
+					let offset = 0;
+					for ( const [index, line] of lines.entries() ) {
+						const y = r[1] + (index - first) * LINE_HEIGHT;
+						if ( index >= first && index < first + capacity ) {
+							if ( focus === id && end > offset && start < offset + line.length ) {
+								const left = measure( line.slice( 0, Math.max( 0, start - offset ) ) ),
+									right = measure( line.slice( 0, Math.min( line.length, end - offset ) ) );
+								rect( [ r[0] + left, y, right - left, LINE_HEIGHT ], [ .2, .4, .7, .6 ], "", [
+									0,
+									0,
+									1,
+									1
+								], r );
+							}
+							quads.push(
+								...text.quads( line, [ r[0], y, r[2], LINE_HEIGHT ], r, white, {
+									vAlign: 0,
+									overflow: "clip"
+								} )
+							);
+						}
+						offset += line.length;
+						if ( value[offset] === "\n" ) offset++;
+					}
+					if ( focus === id && caretVisible ) {
+						rect(
+							[
+								r[0] + measure( caretLines.at( -1 ) ?? "" ),
+								r[1] + (caretLines.length - 1 - first) * LINE_HEIGHT,
+								1,
+								LINE_HEIGHT
+							],
+							white,
+							"",
+							[ 0, 0, 1, 1 ],
+							r
+						);
+					}
+					return;
+				}
+				const r = authoredRect( node, ox, oy ),
+					ink = native ? authoredClientRect( node, ox, oy ) : r,
+					hAlign = native ? node.hAlign : 0,
+					width = text.run( value ).width,
+					offset = Math.max( 0, ink[2] - width ) *
+						(hAlign === 2 ? 1 : hAlign === 1 ? .5 : 0);
+				controls.push( {
+					id,
+					label: node.name,
+					kind: "text",
+					value,
+					rect: r,
+					maxLength,
+					...(native ?
+						{
+							textInsets: node.client,
+							textAlign: hAlign === 2 ? "right" : hAlign === 1 ? "center" : "left"
+						} :
+						{})
+				} );
 				const start = Math.min( value.length, selection[0] ?? 0 ),
 					end = Math.min( value.length, selection[1] ?? start ),
 					before = text.run( value.slice( 0, start ) ).width,
-					through = text.run( value.slice( 0, end ) ).width;
+					through = text.run( value.slice( 0, end ) ).width,
+					caret = selection[2] === selection[0] ? before : through;
+				// Match chatLayout's caret-following viewport; fitting text keeps its authored alignment.
+				const scroll = focus === id && width > ink[2] ? Math.max( 0, caret - ink[2] + EDIT_CARET_WIDTH ) : 0,
+					box: UiRect = [ ink[0] - scroll, ink[1], Math.max( ink[2], width ), ink[3] ];
 				if ( focus === id && end > start ) {
-					rect( [ r[0] + before, r[1], through - before, r[3] ], [ .2, .4, .7, .6 ], "", [ 0, 0, 1, 1 ], r );
+					rect(
+						[ ink[0] + offset + before - scroll, ink[1], through - before, ink[3] ],
+						[ .2, .4, .7, .6 ],
+						"",
+						[
+							0,
+							0,
+							1,
+							1
+						],
+						ink
+					);
 				}
-				quads.push( ...text.quads( value, r, r, white, { overflow: "clip" } ) );
+				quads.push( ...text.quads( value, box, ink, white, { overflow: "clip", hAlign } ) );
 				if ( focus === id && caretVisible ) {
-					rect( [ r[0] + through, r[1], 1, r[3] ], white, "", [ 0, 0, 1, 1 ], r );
+					rect( [ ink[0] + offset + caret - scroll, ink[1], EDIT_CARET_WIDTH, ink[3] ], white, "", [
+						0,
+						0,
+						1,
+						1
+					], ink );
 				}
 			}
 			/*
@@ -8168,10 +8452,84 @@ export function createUi(
 			}
 			/*
 			================
+			guildNoticePanel
+
+			5F3D70 / 5F417A: six lines, 18-pixel pitch, scrollbar range lines - 6.
+			The compact adaptation retains the same controls within the available area.
+			================
+			*/
+			function guildNoticePanel( px: number, py: number, width = 440, height = 177 ) {
+				const page = hud.data()?.windows.ifguildnotifycontents;
+				if ( !page ) return;
+				const at = ( id: number ) => Object.values( page ).find( node => node.id === id )!;
+				const dx = width - 440, dy = height - 177;
+				for ( const id of [ 2, 3, 1 ] ) {
+					const node = at( id ), r = node.rect;
+					authoredChrome(
+						{ ...node, rect: [ r[0], r[1] + (id === 2 ? dy : 0), r[2] + dx, r[3] + (id === 2 ? 0 : dy) ] },
+						px,
+						py
+					);
+				}
+				// Six native baselines need 108 pixels; clip within the 117-pixel
+				// backing, rather than cutting the sixth glyph row at the authored 101.
+				const body: UiRect = [ px + 27, py + 27, 371 + dx, 108 + dy ];
+				const lines = textBoxLines(
+					game?.social?.guild?.contents ?? "",
+					body[2],
+					value => text.run( value ).width
+				);
+				const visible = Math.max( 1, Math.ceil( body[3] / 18 ) ),
+					offset = guildNoticeHud.position( lines.length, visible );
+				controls.push( {
+					id: "guild-notice-body",
+					label: lines.slice( offset, offset + visible ).join( "\n" ),
+					rect: body,
+					kind: "region"
+				} );
+				lines.slice( offset, offset + visible ).forEach( ( line, index ) =>
+					quads.push(
+						...text.quads( line, [ body[0], body[1] + index * 18, body[2], 18 ], body, white, {
+							vAlign: 0,
+							overflow: "clip"
+						} )
+					)
+				);
+				const scroll = chatScrollbar(
+					"guild-notice-scroll",
+					[ px + 406 + dx, py + 32, 16, 75 + dy ],
+					lines.length,
+					visible,
+					Math.max( 0, lines.length - visible - offset ),
+					resources.size,
+					full,
+					hover,
+					pressed
+				);
+				paths.push( ...scroll.paths );
+				quads.push( ...scroll.quads );
+				controls.push( ...scroll.controls.map( c => ({ ...c, disabled: lines.length <= visible }) ) );
+				const confirm = at( 4 );
+				authoredLabeledButton(
+					{ ...confirm, rect: [ confirm.rect[0] + dx / 2, confirm.rect[1] + dy, 76, 24 ] },
+					px,
+					py,
+					"guild-notice-close",
+					hudCopy( confirm.text )
+				);
+			}
+			/*
+			================
 			nativeFrame
 			================
 			*/
-			function nativeFrame( node: AuthoredControl, px: number, py: number, caption: string, closeId = "close" ) {
+			function nativeFrame(
+				node: AuthoredControl,
+				px: number,
+				py: number,
+				caption: string,
+				closeId: CloseControlId
+			) {
 				const r: UiRect = [ px, py, node.rect[2], node.rect[3] ];
 				blocks.push( r );
 				paths.push( ...PARTS.map( p => node.texture + p + ".png" ) );
@@ -8283,7 +8641,7 @@ export function createUi(
 				disabled = false,
 				selected = false
 			) {
-				const path = iconPath( item?.icon );
+				const path = iconPath( item?.icon ), drawn = paths.length;
 				if ( path ) {
 					image( r, path );
 					if ( item && "typeFlags" in item ) {
@@ -8292,6 +8650,7 @@ export function createUi(
 						itemEffects( id, owned, r );
 					}
 				}
+				for ( const content of paths.slice( drawn ) ) contentImages.add( content );
 				controls.push( {
 					id,
 					label: item?.name ?? "",
@@ -8388,7 +8747,7 @@ export function createUi(
 				closeButton(
 					px + 362,
 					py + 10,
-					page === "Inventory" && panel !== "Inventory" ? "companion-close" : "close"
+					page === "Inventory" && panel !== "Inventory" ? "companion-close" : panelCloseId( page )
 				);
 				quads.push(
 					...text.quads( hudCopy( caption ), [ px + 10, py + 12, 367, 12 ], full, white, {
@@ -8474,9 +8833,9 @@ export function createUi(
 				const background = loading?.key === key ?
 					loading.background :
 					next.travel ?
-					travelLoadingBackground( next.travel, loadingVariant() ) :
+					travelLoadingBackground( next.travel, takeLoadingVariant() ) :
 					(next.frontend?.phase === "loading-world" || next.worldTransitionRegion === undefined) ?
-					missionLoadingQuads( w, h, loadingVariant(), 0 )[1]!.texture :
+					missionLoadingQuads( w, h, takeLoadingVariant(), 0 )[1]!.texture :
 					regionLoadingBackground( next.worldTransitionRegion! );
 				request = {
 					key,
@@ -8520,8 +8879,6 @@ export function createUi(
 			if ( warming !== null ) {
 				setPanel( warming, "warm" );
 				if ( warming === "Skills" ) windowWarm.add( skillWindowWarmPaths() );
-				// A map drag reaches tiles outside the warm build's view.
-				if ( warming === "Map" ) windowWarm.add( worldMapImagePaths( hud.data()?.mapIcons ) );
 			}
 			if ( worldVisible && hud.data() ) {
 				if ( chatFeedbackObserved < 0 ) {
@@ -9409,7 +9766,8 @@ export function createUi(
 				}
 				if ( compact && hudData ) {
 					// Banners own a separate strip below player, pet, target buffs and telemetry.
-					targetBottom = drawTransientBanners( Math.max( targetBottom, compactTelemetryTop + 20 ) + 12 );
+					compactTelemetryTop = Math.max( targetBottom, compactTelemetryTop );
+					targetBottom = drawTransientBanners( compactTelemetryTop + HUD_TOOLS_HEIGHT + 12 );
 				}
 				if ( target?.kind === "npc" && target.refObjId === 9251 ) {
 					button(
@@ -10140,7 +10498,7 @@ export function createUi(
 							);
 						authoredLabeledButton( node, mx, my, "map-follow", caption );
 					}
-					closeButton( mx + mw - 25, my + 10 );
+					closeButton( mx + mw - 25, my + 10, panelCloseId( "Map" ) );
 					endWindow( admission );
 				}
 				if ( hudData && (!compact || compact.overlay === "map") ) {
@@ -10289,7 +10647,7 @@ export function createUi(
 							vAlign: 0
 						} )
 					);
-					closeButton( sx + 188, sy + 10 );
+					closeButton( sx + 188, sy + 10, panelCloseId( "System" ) );
 					for ( const node of layout.buttons ) {
 						const id = node.id === EXPERIMENTAL_MENU_ID ? "open-window:Experimental" : node.id === 10 ?
 							"open-window:Option" :
@@ -10319,7 +10677,7 @@ export function createUi(
 						layout = hudData.windows.ifautopotion!,
 						slot = hudData.windows.ifautopotionslot!;
 					windowBox( hudCopy( "UIIT_STT_MACROPOTION" ) || "Auto Potion", px, py, 394, 520 );
-					closeButton( px + 369, py + 10 );
+					closeButton( px + 369, py + 10, panelCloseId( "Auto Potion" ) );
 					const bg = layout.GDR_AUTO_POTION_BG_1!;
 					paths.push( bg.texture );
 					quads.push(
@@ -10600,7 +10958,7 @@ export function createUi(
 					] );
 					const layout = hudData.windows.ifoption!, slot = hudData.windows.ifgameoptionslot!;
 					windowBox( "Experimental", px, py, width, height );
-					closeButton( px + width - 26, py + 10 );
+					closeButton( px + width - 26, py + 10, panelCloseId( "Experimental" ) );
 					const tabWidth = 78, tabStart = (width - (EXPERIMENTAL_TABS.length * tabWidth - 2)) / 2;
 					for ( let i = 0; i < EXPERIMENTAL_TABS.length; i++ ) {
 						nativeTab(
@@ -10732,7 +11090,7 @@ export function createUi(
 							vAlign: 0
 						} )
 					);
-					closeButton( px + 360, py + 10 );
+					closeButton( px + 360, py + 10, panelCloseId( "Option" ) );
 					const tile = { ...layout.GDR_OPTION_BGTILE!, rect: geometry.tile as unknown as UiRect };
 					authoredChrome( tile, px, py );
 					const tabs = [ "VIDEO", "AUDIO", "CAMERA", "INPUT", "GAME" ];
@@ -11887,7 +12245,7 @@ export function createUi(
 					}
 					// Beside a service window the inventory is a companion with its own close
 					// identity. It retains only its own admission: replaying the standalone
-					// window would publish a second "close" beside the service window's.
+					// window would publish its own panel close beside the service window's.
 					endWindow( admission, panel === "Inventory" ? "primary" : "companion:Inventory" );
 				}
 				if ( panel === "Actions" && hudData ) {
@@ -12718,7 +13076,7 @@ export function createUi(
 						ox = px + 19,
 						oy = py + 92;
 					windowBox( hudCopy( "UIIT_STT_BLOCKMAN_LIST" ), px, py, 477, 400 );
-					closeButton( px + 451, py + 10 );
+					closeButton( px + 451, py + 10, panelCloseId( "Blocking" ) );
 					button( "open-window:Guild", "Community", px + 16, py + 35, 110 );
 					const tabRoot = ROOT + "interface/guild/gil_subj_tab_";
 					paths.push( tabRoot + "on.png", tabRoot + "off.png" );
@@ -12978,7 +13336,7 @@ export function createUi(
 							{ hAlign: 1, vAlign: 0 }
 						)
 					);
-					closeButton( px + 759, py + 10 );
+					closeButton( px + 759, py + 10, panelCloseId( "Party Matching" ) );
 					const match = game?.partyMatching,
 						slot = hudData.windows.ifpartymatchslot!,
 						social = game?.social,
@@ -13269,7 +13627,7 @@ export function createUi(
 					const shop = game?.shop,
 						valid = !!shop && shop.npc === game?.target && !shop.error,
 						busy = !!game?.inventoryPending;
-					nativeFrame( root, px, py, shop?.name ?? "" );
+					nativeFrame( root, px, py, shop?.name ?? "", panelCloseId( "Shop" ) );
 					nativePage( page, px, py );
 					if ( compact ) {
 						controls.push( {
@@ -13368,7 +13726,14 @@ export function createUi(
 					if ( resources.has( top ) ) rect( [ px, py, root.rect[2], root.rect[3] ], white, top );
 					blocks.push( [ px, py, 376, 378 ] );
 					authoredText( frame.GDR_ALCHEMYBOX_TITLE!, px, py, hudCopy( "UIIT_CTL_ALCHEMYBOX" ) );
-					authoredButton( frame.GDR_ALCHEMYBOX_CLOSE!, px, py, "close", hudCopy( "UIIT_CTL_CLOSE" ), busy );
+					authoredButton(
+						frame.GDR_ALCHEMYBOX_CLOSE!,
+						px,
+						py,
+						panelCloseId( "Alchemy" ),
+						hudCopy( "UIIT_CTL_CLOSE" ),
+						busy
+					);
 					const pane = frame[
 						processing ?
 							"GDR_ALCHEMYBOX_ELEMENT_MANUFACTURING" :
@@ -13478,7 +13843,7 @@ export function createUi(
 						busy = !!game?.inventoryPending || room?.phase !== "open",
 						page = storagePanel.page( capacity ),
 						slotIds = Array.from( { length: STORAGE_PAGE_SLOTS }, ( _, i ) => storageSlotControlId( i ) );
-					nativeFrame( root, px, py, hudCopy( root.text ) );
+					nativeFrame( root, px, py, hudCopy( root.text ), panelCloseId( "Storage" ) );
 					// Slots, the spinner, the gold amount and the money button are live.
 					nativePage( layout, px, py, [ ...slotIds, 10, 11, 13 ] );
 					for ( let i = 0; i < STORAGE_PAGE_SLOTS; i++ ) {
@@ -14092,7 +14457,11 @@ export function createUi(
 							py,
 							hudCopy( symbol ) + " - " + hudCopy( "UIIT_STT_AVATAR_MAGICOPTION_ADD_COUNT" ) + ": " +
 								free +
-								hudCopy( "UIIT_STT_UNIT" )
+								hudCopy( "UIIT_STT_UNIT" ),
+							// The English line is wider than its static: cut it at the static,
+							// as a native CIFStatic does, instead of drawing under the
+							// inventory beside the window.
+							"clip"
 						);
 					}
 					// 6EB3E0 backs every row with gil_bar02; the chosen row is selected.
@@ -14399,7 +14768,9 @@ export function createUi(
 					}
 					const record = records.find( r => r.gid === cosGid ), busy = !!game?.inventoryPending;
 					if ( cosTab === 1 && !record?.inventory || cosTab === 2 && record?.band !== 4 ) cosTab = 0;
-					nativeFrame( root, px, py, record?.name ?? "" );
+					// Beside a shop (trade goods loading into a transport) the bag keeps
+					// its own close identity; closing it ends the trade, as the shop's does.
+					nativeFrame( root, px, py, record?.name ?? "", panelCloseId( "COS inventory" ) );
 					nativePage( hudData.windows.ifcos!, px, py );
 					[
 						"UIIT_STT_COSNEWUI_TABMENU_BASICINFO",
@@ -14716,8 +15087,12 @@ export function createUi(
 					const state = game?.stall,
 						root = hudData?.root.GDR_STALL,
 						page = hudData?.windows.ifstall,
+						chat = hudData?.windows.ifchatmodule,
 						cell = hudData?.windows.ifstallslot;
-					if ( !state || (state.phase !== "owner" && state.phase !== "visitor") || !root || !page || !cell ) {
+					if (
+						!state || (state.phase !== "owner" && state.phase !== "visitor") || !root || !page || !chat ||
+						!cell
+					) {
 						return;
 					}
 					const admission = beginWindow(),
@@ -14738,34 +15113,90 @@ export function createUi(
 					nativePage( page, px, py, [ 3, 4, 5, 6, 14, 15 ] );
 					authoredImage( at( 15 ), px, py, presentation.icon );
 					authoredImage( at( 14 ), px, py );
-					// The chat module (3): the latest stall lines over the input row.
+					// The chat module (3) owns separate message and input controls in the left pane.
 					const box = authoredRect( at( 3 ), px, py ),
-						rows = Math.max( 0, Math.floor( box[3] / STALL_CHAT_ROW ) - 1 ),
-						said = (game.chat?.lines ?? []).filter( line => line.channel === STALL_CHAT_CHANNEL ).slice(
-							-rows
-						);
-					for ( const [i, line] of said.entries() ) {
-						const row: UiRect = [ box[0] + 4, box[1] + i * STALL_CHAT_ROW, box[2] - 8, STALL_CHAT_ROW ];
+						messages = authoredRect( chat.GDR_CHAT_CHATMESSAGE!, box[0], box[1] ),
+						rows = Math.max( 0, Math.floor( messages[3] / STALL_CHAT_ROW ) ),
+						said = stallHud.messages().flatMap( line =>
+							textBoxLines( line.name + ":" + line.text, messages[2], value => text.run( value ).width )
+						),
+						end = Math.max( 0, said.length - stallChatScroll.offset() ),
+						first = Math.max( 0, end - rows ),
+						padding = Math.max( 0, rows - said.length ) * STALL_CHAT_ROW;
+					// CIFChatModule's constructor (545BE0) attaches resinfo\ifchatmodule.txt.
+					nativePage( chat, box[0], box[1] );
+					for ( const [i, line] of said.slice( first, end ).entries() ) {
+						const row: UiRect = [
+							messages[0],
+							messages[1] + padding + i * STALL_CHAT_ROW,
+							messages[2],
+							STALL_CHAT_ROW
+						];
 						quads.push(
-							...text.quads( line.name + ":" + line.text, row, box, white, { overflow: "clip" } )
+							...text.quads( line, row, messages, white, { overflow: "clip" } )
 						);
 					}
+					const messageScroll = chatScrollbar(
+						"stall-chat-scroll",
+						authoredRect( chat.GDR_CHAT_VSCROLL!, box[0], box[1] ),
+						said.length,
+						rows,
+						stallChatScroll.offset(),
+						resources.size,
+						full,
+						hover,
+						pressed
+					);
+					paths.push( ...messageScroll.paths );
+					quads.push( ...messageScroll.quads );
+					controls.push( ...messageScroll.controls );
+					stallChatScroll.geometry( { ...messageScroll, bounds: messages } );
 					partyEdit(
-						{
-							...at( 3 ),
-							rect: [
-								at( 3 ).rect[0] + 4,
-								at( 3 ).rect[1] + at( 3 ).rect[3] - STALL_CHAT_ROW,
-								at( 3 ).rect[2] - 8,
-								14
-							]
-						},
-						px,
-						py,
+						chat.GDR_CHAT_INPUTBOX!,
+						box[0],
+						box[1],
 						STALL_CHAT_TEXT,
 						stallHud.chat(),
 						STALL_CHAT_LIMIT
 					);
+					// 5A24D0 adds the owner; 751720 then adds packet visitors and the local visitor.
+					const members = authoredRect( chat.GDR_CHAT_OTHERUSER!, box[0], box[1] ),
+						memberIds = new Set( [ state.owner, ...state.visitors, ...(owner ? [] : [ game.localGid ]) ] ),
+						memberNames = Array.from(
+							memberIds,
+							gid =>
+								next.entities.find( entity => entity.gid === gid && entity.kind === "player" )?.name ||
+								(gid === game.localGid ? next.session?.character ?? "" : "")
+						).filter( name => name ),
+						memberRows = Math.floor( members[3] / STALL_CHAT_ROW ),
+						memberBar = authoredRect( chat.GDR_CHAT_USERVSCROLL!, box[0], box[1] ),
+						memberRange = Math.max( 0, memberNames.length - memberRows );
+					// 545570 appends names without the message box's explicit tail selection.
+					stallMemberScroll.geometry( { range: memberRange, travel: memberBar[3], bounds: members } );
+					const memberFirst = memberRange - stallMemberScroll.offset();
+					for ( const [i, name] of memberNames.slice( memberFirst, memberFirst + memberRows ).entries() ) {
+						const row: UiRect = [
+							members[0],
+							members[1] + i * STALL_CHAT_ROW,
+							members[2],
+							STALL_CHAT_ROW
+						];
+						quads.push( ...text.quads( name, row, members, white, { overflow: "clip" } ) );
+					}
+					const memberScroll = chatScrollbar(
+						"stall-member-scroll",
+						memberBar,
+						memberNames.length,
+						memberRows,
+						stallMemberScroll.offset(),
+						resources.size,
+						full,
+						hover,
+						pressed
+					);
+					paths.push( ...memberScroll.paths );
+					quads.push( ...memberScroll.quads );
+					controls.push( ...memberScroll.controls );
 					authoredText( at( 10 ), px, py, title );
 					authoredText( at( 11 ), px, py, state.greeting );
 					authoredText(
@@ -14794,8 +15225,8 @@ export function createUi(
 					}
 					const display = at( 12 ).rect;
 					for ( let slot = 0; slot < STALL_SLOTS; slot++ ) {
-						const ox = px + display[0] + (slot % 2) * STALL_CELL_PITCH_X,
-							oy = py + display[1] + Math.floor( slot / 2 ) * STALL_CELL_PITCH_Y,
+						const ox = px + display[0] + STALL_CELL_INSET + (slot % 2) * STALL_CELL_PITCH_X,
+							oy = py + display[1] + STALL_CELL_INSET + Math.floor( slot / 2 ) * STALL_CELL_PITCH_Y,
 							offer = state.offers.find( row => row.slot === slot ),
 							r = authoredRect( part( 1 ), ox, oy );
 						const background = offer ? STALL_SLOT_IMAGES.occupied : STALL_SLOT_IMAGES.empty;
@@ -15046,18 +15477,33 @@ export function createUi(
 					const at = ( id: number ) => Object.values( page ).find( n => n.id === id )!,
 						slotAt = ( id: number ) => Object.values( slot ).find( n => n.id === id )!,
 						list = at( 6 );
-					nativePage( page, ox, oy, [ 4, 5, 11 ] );
-					for ( const id of [ 12, 13, 14, 15, 16 ] ) {
-						authoredText( at( id ), ox, oy, hudCopy( at( id ).text ) );
-					}
+					nativePage( page, ox, oy, [ 4, 5 ] );
+					authoredImage( at( 11 ), ox, oy );
 					authoredText( at( 11 ), ox, oy, hudCopy( at( 11 ).text ) );
+					// Inference from the authored list/slot extents: five 402x24 bar children.
+					for ( let i = 0; i < 5; i++ ) {
+						const bar = barChrome(
+							[ ox + list.rect[0], oy + list.rect[1] + i * 23, 402, 24 ],
+							ROOT + "interface/ifcommon/com_bar01_",
+							resources.size,
+							full
+						);
+						paths.push( ...bar.paths );
+						quads.push( ...bar.quads );
+					}
 					grantPowerHud.visible().forEach( ( { row, mask }, i ) => {
 						const rx = ox + list.rect[0], ry = oy + list.rect[1] + i * 23;
 						authoredText( slotAt( 10 ), rx, ry, row.name );
 						GRANT_RIGHTS.forEach( ( right, column ) => {
-							const box = slotAt( 11 + column ),
-								path = box.texture.replace( "_off", mask & right ? "_on" : "_off" );
-							authoredImage( box, rx, ry, path );
+							const box = slotAt( 11 + column ), boxRect = authoredRect( box, rx, ry );
+							// ifcheckbox owns the mark; com_checkbutton02 has no _on sibling.
+							authoredImage( box, rx, ry );
+							if ( mask & right ) {
+								image(
+									[ boxRect[0], boxRect[1], 16, 16 ],
+									ROOT + "interface/ifcommon/com_checkbutton_on.png"
+								);
+							}
 							controls.push( {
 								id: "guild-grant:" + row.id + ":" + right,
 								label: hudCopy( at( 12 + column ).text ),
@@ -15089,18 +15535,65 @@ export function createUi(
 						leader = allianceLeader( social ),
 						selected = alliances.find( row => row.id === socialMember ),
 						armed = allianceButtons( social );
-					nativePage( page, gx, gy, [ 63, 64, 81, 82, 83 ] );
-					for ( const id of [ 21, 22, 23, 24, 42, 43, 44, 45 ] ) {
-						authoredText( at( id ), gx, gy, hudCopy( at( id ).text ) );
+					// 5F6FA0 / 5F72B0: empty notices replace the detail controls.
+					// Do not let nativePage paint both visibility branches first.
+					nativePage( page, gx, gy, [
+						22,
+						23,
+						24,
+						25,
+						26,
+						27,
+						28,
+						29,
+						30,
+						43,
+						44,
+						45,
+						46,
+						47,
+						48,
+						49,
+						50,
+						51,
+						52,
+						63,
+						64,
+						81,
+						82,
+						83
+					] );
+					for ( const id of [ ...(leader ? [ 22, 23, 24 ] : []), ...(selected ? [ 43, 44, 45 ] : []) ] ) {
+						authoredText( at( id ), gx, gy, hudCopy( at( id ).text ), true );
 					}
 					if ( !leader ) authoredText( at( 30 ), gx, gy, hudCopy( "UIIT_STT_NOT_EXIST_GUILD_RESPECT_ALLY" ) );
 					else {
+						authoredImage( at( 25 ), gx, gy );
+						authoredImage(
+							at( 27 ),
+							gx,
+							gy,
+							at( 27 ).texture.replace(
+								"china",
+								hudData!.countries[leader.model] === 1 ? "europe" : "china"
+							)
+						);
 						authoredText( at( 26 ), gx, gy, leader.name );
 						authoredText( at( 28 ), gx, gy, leader.master );
 						authoredText( at( 29 ), gx, gy, String( alliances.length ) );
 					}
 					if ( !selected ) authoredText( at( 52 ), gx, gy, hudCopy( "UIIT_STT_NOT_EXIST_GUILD" ) );
 					else {
+						authoredImage( at( 46 ), gx, gy );
+						authoredImage(
+							at( 49 ),
+							gx,
+							gy,
+							at( 49 ).texture.replace(
+								"china",
+								hudData!.countries[selected.model] === 1 ? "europe" : "china"
+							)
+						);
 						authoredText( at( 47 ), gx, gy, selected.name );
 						authoredText( { ...at( 48 ), color: gold }, gx, gy, String( selected.level ) );
 						authoredText( at( 50 ), gx, gy, selected.master );
@@ -15109,6 +15602,18 @@ export function createUi(
 					authoredLabeledButton( at( 63 ), gx, gy, "union-sort:name", hudCopy( at( 63 ).text ) );
 					authoredLabeledButton( at( 64 ), gx, gy, "union-sort:level", hudCopy( at( 64 ).text ) );
 					const list = at( 62 ), rows = unionHud.order( alliances );
+					// The scroll manager has no skin. Its CIFBarWnd children supply it;
+					// 5FB790 switches between com_bar01_ and com_bar01select_.
+					for ( let i = 0; i < Math.floor( list.rect[3] / 23 ); i++ ) {
+						const bar = barChrome(
+							[ gx + list.rect[0], gy + list.rect[1] + i * 23, 177, 24 ],
+							ROOT + "interface/ifcommon/com_bar01" + (rows[i]?.id === socialMember ? "select_" : "_"),
+							resources.size,
+							full
+						);
+						paths.push( ...bar.paths );
+						quads.push( ...bar.quads );
+					}
 					rows.slice( 0, Math.floor( list.rect[3] / 23 ) ).forEach( ( row, i ) => {
 						const ox = gx + list.rect[0], oy = gy + list.rect[1] + i * 23;
 						authoredText( slotAt( 11 ), ox, oy, row.name );
@@ -15116,7 +15621,7 @@ export function createUi(
 						controls.push( {
 							id: "social-member:" + row.id,
 							label: row.name,
-							rect: [ ox, oy, list.rect[2], 23 ],
+							rect: [ ox, oy, 177, 23 ],
 							kind: "button",
 							selected: row.id === socialMember
 						} );
@@ -15147,18 +15652,46 @@ export function createUi(
 					const selected = rows.find( row => row.id === state.selected );
 					const at = ( id: number ) => Object.values( page ).find( n => n.id === id )!;
 					const put = ( id: number, value: string ) => {
-						if ( at( id ) ) authoredText( at( id ), gx, gy, value );
+						// Inference: keep localized Guild detail ink inside its authored
+						// field; overflowing it can cover another pane or value.
+						if ( at( id ) ) authoredText( at( id ), gx, gy, value, true );
 					};
-					nativePage( page, gx, gy, scores ? [ 30, 60, 61, 62 ] : [ 33, 34, 51, 52 ] );
+					nativePage(
+						page,
+						gx,
+						gy,
+						scores ?
+							[ 12, 30, 60, 61, 62, 90, 91, 92, 93, 100, 101, 102, 108 ] :
+							[ 12, 13, 14, 15, 16, 22, 33, 34, 51, 52 ]
+					);
 					const count = scores ? 6 : 9, first = Math.min( state.offset, Math.max( 0, rows.length - count ) );
 					for ( let i = 0; i < count; i++ ) {
 						const row = rows[first + i],
 							r: UiRect = scores ?
 								[ gx + 11, gy + 33 + i * 23, 144, 24 ] :
 								[ gx + 236, gy + 35 + i * 23, 177, 24 ];
+						// 5FF670 fills nine empty rows with the native bar skin.
+						const bar = barChrome(
+							r,
+							ROOT + "interface/ifcommon/com_bar01" + (row?.id === state.selected ? "select_" : "_"),
+							resources.size,
+							full
+						);
+						paths.push( ...bar.paths );
+						quads.push( ...bar.quads );
 						if ( row ) {
-							if ( row.id === state.selected ) rect( r, [ .25, .3, .35, .6 ] );
-							quads.push( ...text.quads( row.name, [ r[0] + 6, r[1] + 7, r[2] - 12, 14 ], r, white ) );
+							const name = !scores && hudData?.windows.ifhostileguildslot?.GDR_HOSTILE_GUILD_NAME;
+							quads.push(
+								...text.quads(
+									row.name,
+									name ?
+										authoredClientRect( name, r[0], r[1] ) :
+										[ r[0] + 6, r[1] + 7, r[2] - 12, 14 ],
+									r,
+									white,
+									{ overflow: "clip" }
+								)
+							);
 							controls.push( {
 								id: "war-select:" + row.id,
 								label: row.name,
@@ -15185,13 +15718,14 @@ export function createUi(
 					if ( !scores ) {
 						for ( const id of selected ? [ 12, 13, 14, 15 ] : [ 12 ] ) put( id, hudCopy( at( id ).text ) );
 						if ( selected ) {
+							authoredImage( at( 16 ), gx, gy );
 							put( 17, selected.name );
 							for ( const id of [ 20, 21 ] ) put( id, hudCopy( "UIIT_CTL_GUILD_DONOTKNOW" ) );
 						} else put( 22, hudCopy( at( 22 ).text ) );
 						for ( const id of [ 33, 34 ] ) {
 							authoredLabeledButton( at( id ), gx, gy, "war-sort:" + id, hudCopy( at( id ).text ) );
 						}
-						const master = social?.guild?.members.find( m => m.id === social.self )?.grade === 0;
+						const master = guildSelf( social )?.grade === 0;
 						authoredLabeledButton( at( 51 ), gx, gy, "war-declare", hudCopy( at( 51 ).text ), !master );
 						authoredLabeledButton(
 							at( 52 ),
@@ -15212,8 +15746,11 @@ export function createUi(
 							hudCopy( at( id ).text )
 						);
 					}
-					for ( const id of [ 90, 91, 92, 93, 100, 101, 102 ] ) put( id, hudCopy( at( id ).text ) );
+					for ( const id of selected ? [ 90, 91, 92, 93, 100, 101, 102 ] : [ 90 ] ) {
+						put( id, hudCopy( at( id ).text ) );
+					}
 					if ( selected ) {
+						authoredImage( at( 12 ), gx, gy );
 						put( 95, selected.name );
 						put( 96, String( selected.localScore ) );
 						put( 97, String( selected.enemyScore ) );
@@ -15287,9 +15824,15 @@ export function createUi(
 							page = hudData.windows.ifguild!,
 							social = game?.social,
 							guild = social?.guild,
-							self = guild?.members.find( member => member.id === social?.self );
+							self = guildSelf( social );
 						image( [ x + 6, y + 28, width - 12, height - 34 ], at( page, 1 ).texture );
-						nativeFrame( { ...root, rect: [ 0, 0, width, height ] }, x, y, hudCopy( root.text ) );
+						nativeFrame(
+							{ ...root, rect: [ 0, 0, width, height ] },
+							x,
+							y,
+							hudCopy( root.text ),
+							panelCloseId( "Guild" )
+						);
 						/*
 						================
 						put
@@ -15397,6 +15940,17 @@ export function createUi(
 								24
 							] );
 							const listTop = noticeY + 28;
+							controls.push( {
+								id: "guild-notice-read",
+								label: guild.subject,
+								rect: [ left, noticeY, inner, 24 ],
+								kind: "button",
+								disabled: !guild.contents
+							} );
+							if ( guildNoticeHud.isOpen() ) {
+								guildNoticePanel( left - 15, listTop, inner + 30, Math.max( 130, bottom - listTop ) );
+								return;
+							}
 							if (
 								grantPowerHud.isOpen() && hudData.windows.ifguildgrantpower &&
 								hudData.windows.ifguildgrantpowerslot
@@ -15816,7 +16370,7 @@ export function createUi(
 							gx = px + 13,
 							gy = py + 61,
 							guild = game?.social?.guild;
-						nativeFrame( root, px, py, hudCopy( root.text ) );
+						nativeFrame( root, px, py, hudCopy( root.text ), panelCloseId( "Guild" ) );
 						[
 							"UIIT_STT_GUILD_INFO",
 							"UIIT_CTL_GUILD_RESPECT",
@@ -15885,17 +16439,47 @@ export function createUi(
 							for ( const id of [ 1, 2, 3 ] ) {
 								authoredChrome( Object.values( page ).find( n => n.id === id )!, gx, gy );
 							}
-							nativePage( page, gx, gy, [ 1, 2, 3, 104 ] );
+							nativePage( page, gx, gy, [
+								1,
+								2,
+								3,
+								34,
+								104,
+								...(guildNoticeHud.isOpen() ?
+									[ 80, 81, 82, 101, 102, 103, 105, 106, 120, 121, 122, 123, 124, 125, 126 ] :
+									[])
+							] );
 							/*
 						================
 						at
 						================
 						*/
 							const at = ( id: number ) => Object.values( page ).find( n => n.id === id )!;
+							// Inference: the localized leader caption must stop before its race icon.
+							const leaderLabel = at( 34 ), leaderIcon = at( 40 );
+							authoredText(
+								{
+									...leaderLabel,
+									rect: [
+										leaderLabel.rect[0],
+										leaderLabel.rect[1],
+										leaderIcon.rect[0] - leaderLabel.rect[0] - 2,
+										leaderLabel.rect[3]
+									]
+								},
+								gx,
+								gy,
+								hudCopy( leaderLabel.text ),
+								true
+							);
 							const notice = at( 61 ), noticePath = ROOT + "interface/guild/gil_windo02_off.png";
 							authoredImage( notice, gx, gy, noticePath );
 							authoredText( at( 63 ), gx, gy, hudCopy( at( 63 ).text ) );
-							for ( const id of [ 121, 122, 123, 124, 126 ] ) {
+							for (
+								const id of grantPowerHud.isOpen() || guildNoticeHud.isOpen() ?
+									[] :
+									[ 121, 122, 123, 124, 126 ]
+							) {
 								const node = at( id ),
 									caption = hudCopy(
 										id === 121 ?
@@ -15910,7 +16494,7 @@ export function createUi(
 							}
 							// 5E8850 creates empty 312x24 rows until six exist. Those native row
 							// textures are the backing; a bare scroll-manager rectangle is transparent.
-							for ( let i = 0; i < 6; i++ ) {
+							for ( let i = 0; !grantPowerHud.isOpen() && !guildNoticeHud.isOpen() && i < 6; i++ ) {
 								const path = ROOT + "interface/guild/gil_bar02_deselect.png";
 								paths.push( path );
 								if ( resources.has( path ) ) {
@@ -15919,8 +16503,20 @@ export function createUi(
 							}
 							if ( !guild ) authoredText( at( 38 ), gx, gy, hudCopy( "UIIT_STT_NO_GUILD" ) );
 							if ( guild ) {
+								controls.push( {
+									id: "guild-notice-read",
+									label: guild.subject,
+									rect: [
+										gx + notice.rect[0],
+										gy + notice.rect[1],
+										notice.rect[2] - 28,
+										notice.rect[3]
+									],
+									kind: "button",
+									disabled: !guild.contents
+								} );
 								const leader = guild.members.find( m => m.grade === 0 ),
-									self = guild.members.find( m => m.id === game?.social?.self );
+									self = guildSelf( game?.social );
 								for (
 									const [id, value] of [
 										[ 38, guild.name ],
@@ -15948,19 +16544,35 @@ export function createUi(
 									s = at( 82 ),
 									slot = hudData.windows.ifguildmemberslot!;
 								socialPage = Math.min( socialPage, Math.max( 0, Math.ceil( rows.length / 6 ) - 1 ) );
-								if (
+								// Register the empty region first so member/authority controls win hits.
+								controls.push( {
+									id: "guild-list",
+									label: hudCopy( "UIIT_STT_GUILD_INFO" ),
+									rect: authoredRect( s, gx, gy ),
+									kind: "region"
+								} );
+								if ( guildNoticeHud.isOpen() ) guildNoticePanel( gx + 6, gy + 138 );
+								else if (
 									grantPowerHud.isOpen() && hudData.windows.ifguildgrantpower &&
 									hudData.windows.ifguildgrantpowerslot
 								) {
 									grantPanel(
 										hudData.windows.ifguildgrantpower,
 										hudData.windows.ifguildgrantpowerslot,
-										gx + at( 150 ).rect[0],
-										gy + at( 150 ).rect[1],
+										// ifguild/GrantPower control 150 is a separately created
+										// child, deliberately absent from the base page decoder.
+										gx + 14,
+										gy + 138,
 										self?.grade === 0
 									);
 								} else {rows.slice( socialPage * 6, socialPage * 6 + 6 ).forEach( ( row, i ) => {
 										const ox = gx + s.rect[0], oy = gy + s.rect[1] + i * 23;
+										if ( row.id === socialMember ) {
+											image(
+												[ ox, oy, 312, 24 ],
+												ROOT + "interface/guild/gil_bar02_select.png"
+											);
+										}
 										nativePage( slot, ox, oy, [ 9, 10 ] );
 										const roleSymbol = ({
 											1: "COMMANDER",
@@ -16028,6 +16640,7 @@ export function createUi(
 											[ 62, "guild-dialog:notice" ]
 										] as const
 									) {
+										if ( guildNoticeHud.isOpen() && id !== 45 && id !== 62 ) continue;
 										const node = id === 105 ?
 											{ ...at( id ), rect: [ 353, 223, 0, 0 ] as UiRect } :
 											at( id );
@@ -16046,12 +16659,6 @@ export function createUi(
 										if ( node.text ) authoredText( node, gx, gy, hudCopy( node.text ) );
 									}
 								}
-								controls.push( {
-									id: "guild-list",
-									label: hudCopy( "UIIT_STT_GUILD_INFO" ),
-									rect: authoredRect( s, gx, gy ),
-									kind: "region"
-								} );
 							}
 						}
 						endWindow( admission );
@@ -16061,7 +16668,7 @@ export function createUi(
 					const admission = beginWindow();
 					const px = Math.max( 12, (w - 380) / 2 ), py = Math.max( 150, (h - 440) / 2 );
 					windowBox( panel, px, py, 380, 420 );
-					closeButton( px + 354, py + 10 );
+					closeButton( px + 354, py + 10, panelCloseId( panel === "Chat" ? "Chat" : "Magic Pop" ) );
 					if ( panel === "Magic Pop" ) {
 						const active = game?.gacha,
 							busy = !!game?.inventoryPending,
@@ -16623,7 +17230,7 @@ export function createUi(
 							{ hAlign: 1, vAlign: 1 }
 						)
 					);
-					closeButton( ax + 760, ay + 10 );
+					closeButton( ax + 760, ay + 10, panelCloseId( "Academy Matching" ) );
 					const field: Record<string, keyof import("@/engine/foundation/gameplay/academy").AcademyListing> = {
 						ID_BTN: "id",
 						LEVEL_BTN: "level",
@@ -16762,7 +17369,7 @@ export function createUi(
 						{ hAlign: 1, vAlign: 1 }
 					)
 				);
-				closeButton( gx + 399, gy + 10 );
+				closeButton( gx + 399, gy + 10, panelCloseId( "Game Guide" ) );
 				for (
 					const name of [
 						"GDR_GUIDE_FRAME_1",
@@ -17682,8 +18289,64 @@ export function createUi(
 							) :
 							page,
 						mx,
-						my
+						my,
+						notice ? [ 2 ] : donate ? [ 610, 612, 613, 614, 615 ] : []
 					);
+					if ( notice ) {
+						const reminder = Object.values( page ).find( node => node.id === 2 )!;
+						authoredText(
+							reminder,
+							mx,
+							my,
+							noticeText( hudCopy, {
+								key: reminder.text,
+								value: 0,
+								arguments: [ String( socialContents.length ), "1023" ]
+							} ),
+							true
+						);
+					}
+					if ( guildDialog === "role" ) {
+						const roles = [
+							"SUBCOMMANDER",
+							"BATTLEMANAGER",
+							"PRODUCTMANAGER",
+							"TRAINERMANAGER",
+							"ENGINEER",
+							"POSITION_NOT"
+						];
+						quads.push(
+							...text.quads(
+								hudCopy( "UIIT_STT_GUILD_POSITION" ),
+								[ mx + 10, my + 12, width - 20, 14 ],
+								full,
+								white,
+								{ hAlign: 1 }
+							)
+						);
+						roles.forEach( ( role, index ) => {
+							const label = Object.values( page ).find( node => node.id === 712 + index )!;
+							authoredText( label, mx, my, hudCopy( "UIIT_STT_FORT_GUILD_" + role ), true );
+						} );
+					}
+					if ( donate ) {
+						for ( const id of [ 610, 612, 613, 614, 615 ] ) {
+							const node = Object.values( page ).find( node => node.id === id )!;
+							authoredText(
+								node,
+								mx,
+								my,
+								id === 610 ?
+									noticeText( hudCopy, {
+										key: node.text,
+										value: 0,
+										arguments: [ String( Number( socialAmount ) || 0 ) ]
+									} ) :
+									hudCopy( node.text ),
+								true
+							);
+						}
+					}
 					for ( const node of Object.values( page ) ) {
 						if ( node.type === "CIFEdit" ) {
 							partyEdit(
@@ -17750,9 +18413,21 @@ export function createUi(
 					}
 				} else {
 					const r: UiRect = [ mx + 28, my + 65, 252, 20 ];
+					// Inference: the native name-grant input uses shared message chrome;
+					// retain its title and an opaque edit field rather than an invisible hit box.
+					quads.push(
+						...text.quads(
+							hudCopy( "UIIT_CTL_GUILD_NAME_GRANT" ),
+							[ mx + 10, my + 12, width - 20, 14 ],
+							full,
+							white,
+							{ hAlign: 1 }
+						)
+					);
+					image( r, ROOT + "interface/messagebox/msgbox_blackbox.png" );
 					controls.push( {
 						id: "social-name",
-						label: hudCopy( "UIIT_CTL_GUILD_NAMEGRANT" ),
+						label: hudCopy( "UIIT_CTL_GUILD_NAME_GRANT" ),
 						rect: r,
 						kind: "text",
 						value: socialName,
@@ -18339,100 +19014,322 @@ export function createUi(
 				guildField = guildManagerHud.field(),
 				guildVote = guildManagerHud.vote();
 			if ( worldVisible && (guildAsk || guildField || guildVote) ) {
-				// The guild manager's boxes (guild-manager-hud.ts) in the job box's frame.
-				const layout = guildProposalLayout( w, h );
-				const say = ( key: string, ...args: string[] ) =>
-					noticeText( hudCopy, { key, value: 0, arguments: args } );
-				const price = guildAsk?.kind === "level-up" ? guildLevelUpPrice( guildAsk.value ) : undefined;
-				const title = guildField?.kind === "create" ?
-					"UIIT_CTL_GUILD_CREATE" :
-					guildField ?
-					"UIIT_STT_MLEAVE_WINDOWS" :
-					guildVote ?
-					"UIIT_STT_MRELEASE_VOTESTATE" :
-					"UIIT_STT_CONFIRM_BOX";
-				const lines: Record<string, readonly [string, string]> = {
-					"level-up": [
-						say( "UIIT_MSG_GUILD_LEVEL_UP_CONDITION", String( (guildAsk?.value ?? 0) + 1 ) ),
-						price ?
-							hudCopy( "UIIT_STT_NEED_GP" ) + " : " + price.gp + "   " +
-							hudCopy( "UIIT_STT_CIRCULATION_NEEDMONEY" ) + " : " + price.gold :
-							hudCopy( "UIIT_MSG_ERROR_GUILD_LEVEL_UP_FULL" )
-					],
-					"dissolve": [
-						hudCopy( "UIIT_MSG_GUILD_BREAK_CONFIRM" ),
-						hudCopy( "UIIT_MSG_GUILD_BREAK_ANOTHER_EXPLAIN" )
-					],
-					"secede": [ hudCopy( "UIIT_MSG_GUILD_SECESSION_CONFIRM" ), "" ],
-					"release": [ hudCopy( "UIIT_MSG_MRELEASE_CONFIRM" ), "" ],
-					"compensation": [
-						say( "UIIT_CTL_GUILDWAR_COMPENSATION_01", String( guildAsk?.value ?? 0 ) ),
-						hudCopy( "UIIT_CTL_GUILDWAR_COMPENSATION_02" )
-					],
-					"master-leave": [ hudCopy( "UIIT_MSG_MLEAVE_INPUTID" ), "" ],
-					"create": [ "", "" ],
-					"vote": [
-						Math.ceil( (guildVote?.remainingMs ?? 0) / 60000 ) + " " + hudCopy( "PARAM_MINUTE" ),
-						""
-					]
-				};
-				const [first, second] = lines[guildAsk?.kind ?? guildField?.kind ?? "vote"]!;
-				controls = [];
-				blocks = [ full ];
-				paths.push( ...partyProposalAssets() );
-				quads.push(
-					...normalTile( layout.background, MESSAGE_TILE, resources.size( MESSAGE_TILE ), full ),
-					...frameRing(
-						layout.frame,
-						MESSAGE_FRAME,
-						PARTS.map( p => resources.size( MESSAGE_FRAME + p + ".png" ) ),
-						full
-					),
-					...text.quads( hudCopy( title ), layout.title, full, white, { hAlign: 1, vAlign: 0 } ),
-					...text.quads( first, layout.name, full, white, { hAlign: 1, vAlign: 0 } )
-				);
-				if ( guildField ) {
-					const field: UiRect = [ layout.question[0], layout.question[1], layout.question[2], 16 ];
-					controls.push( {
-						id: "guild-manager-text",
-						label: hudCopy( title ),
-						kind: "text",
-						value: guildField.text,
-						rect: field,
-						maxLength: 12
-					} );
-					rect( field, [ 0, 0, 0, .6 ], "", [ 0, 0, 1, 1 ], full );
-					quads.push(
-						...text.quads( guildField.text, field, field, white, {
-							hAlign: 1,
-							vAlign: 1,
-							overflow: "clip"
-						} )
+				const levelPage = hud.data()?.windows.ifguildlevelup;
+				const levelRoot = hud.data()?.root.GDR_GUILD_LEVEL_UP;
+				const transferPage = hud.data()?.windows.ifguildmasterleave,
+					transferSlot = hud.data()?.windows.ifguildmasterleaveslot;
+				const transferRoot = hud.data()?.root.GDR_GUILDMASTER_LEAVE;
+				const electionPage = hud.data()?.windows.ifguildmasterelection,
+					electionRoot = hud.data()?.root.GDR_GUILDMASTER_ELECTION;
+				if ( guildVote && electionPage && electionRoot ) {
+					// 5F0940: Create then ListWnd, seven empty rows, Confirm initially
+					// disabled. Candidate type 2 asserts in v1.150; do not invent rows.
+					const x = Math.max( 0, (w - electionRoot.rect[2]) / 2 ),
+						y = Math.max( 0, (h - electionRoot.rect[3]) / 2 );
+					const at = ( id: number ) => Object.values( electionPage ).find( n => n.id === id )!;
+					controls = [];
+					blocks = [ full ];
+					authoredChrome(
+						{
+							...electionRoot,
+							type: "CIFFrame",
+							rect: [ 0, 0, electionRoot.rect[2], electionRoot.rect[3] ]
+						},
+						x,
+						y
 					);
-					if ( focus === "guild-manager-text" && caretVisible ) {
-						const width = text.run( guildField.text ).width;
-						rect(
-							[ field[0] + (field[2] + width) / 2, field[1] + 1, 2, 14 ],
+					nativePage( electionPage, x, y, [ 11, 12, 14, 22, 23, 24 ] );
+					for ( const id of [ 22, 23, 24 ] ) {
+						const node = at( id );
+						authoredImage( node, x, y );
+						authoredText( node, x, y, hudCopy( node.text ), true );
+					}
+					quads.push(
+						...text.quads(
+							hudCopy( "UIIT_CTL_MRELEASE_PROGRESSWINDOW" ),
+							[ x + 10, y + 12, electionRoot.rect[2] - 21, 12 ],
+							full,
 							white,
-							"",
-							[ 0, 0, 1, 1 ],
-							field
+							{ hAlign: 1, vAlign: 0 }
+						)
+					);
+					// 5F0130 formats integer milliseconds / 60000 with "%d%s".
+					const remaining = Math.floor( Math.max( 0, guildVote.remainingMs ) / 60000 ) +
+						hudCopy( "PARAM_MINUTE" );
+					authoredText( at( 14 ), x, y, remaining, true );
+					controls.push( {
+						id: "guild-election-remaining",
+						label: remaining,
+						rect: authoredRect( at( 14 ), x, y ),
+						kind: "region"
+					} );
+					const scroll = chatScrollbar(
+						"guild-election",
+						[ x + 239, y + 80, 16, 116 ],
+						0,
+						7,
+						0,
+						resources.size,
+						full,
+						hover,
+						pressed
+					);
+					paths.push( ...scroll.paths );
+					quads.push( ...scroll.quads );
+					controls.push( ...scroll.controls.map( c => ({ ...c, disabled: true }) ) );
+					authoredLabeledButton( at( 11 ), x, y, "guild-manager-yes", hudCopy( at( 11 ).text ), true );
+					authoredLabeledButton( at( 12 ), x, y, "guild-manager-no", hudCopy( at( 12 ).text ) );
+				} else if (
+					guildField?.kind === "master-leave" && !guildField.confirmed && transferPage && transferSlot &&
+					transferRoot
+				) {
+					// 5F25F0 creates Create then ListWnd; 5F2390 omits the current master.
+					const x = Math.max( 0, (w - transferRoot.rect[2]) / 2 ),
+						y = Math.max( 0, (h - transferRoot.rect[3]) / 2 );
+					const at = ( id: number ) => Object.values( transferPage ).find( n => n.id === id )!;
+					const members = game?.social?.guild?.members.filter( m =>
+						m.grade !== 0
+					).sort( ( a, b ) => a.id - b.id ) ?? [];
+					const offset = guildManagerHud.transferPosition( members.length );
+					controls = [];
+					blocks = [ full ];
+					authoredChrome(
+						{
+							...transferRoot,
+							type: "CIFFrame",
+							rect: [ 0, 0, transferRoot.rect[2], transferRoot.rect[3] ]
+						},
+						x,
+						y
+					);
+					nativePage( transferPage, x, y, [ 11, 12 ] );
+					quads.push(
+						...text.quads(
+							hudCopy( "UIIT_STT_MLEAVE_WINDOWS" ),
+							[ x + 10, y + 12, transferRoot.rect[2] - 21, 14 ],
+							full,
+							white,
+							{ hAlign: 1, vAlign: 0 }
+						)
+					);
+					members.slice( offset, offset + 7 ).forEach( ( member, i ) => {
+						const row = at( 31 + i ), rx = x + row.rect[0], ry = y + row.rect[1];
+						nativePage( transferSlot, rx, ry );
+						authoredImage( Object.values( transferSlot ).find( n => n.id === 10 )!, rx, ry );
+						const name = Object.values( transferSlot ).find( n => n.id === 11 )!;
+						authoredText( name, rx, ry, member.name, true );
+						if ( member.id === guildField.member ) {
+							image( [ rx + 15, ry + 7, 16, 16 ], ROOT + "interface/ifcommon/com_checkbutton_on.png" );
+						}
+						controls.push( {
+							id: "guild-transfer-member:" + member.id,
+							label: member.name,
+							rect: [ rx, ry, 196, 23 ],
+							kind: "button",
+							selected: member.id === guildField.member
+						} );
+					} );
+					const scroll = chatScrollbar(
+						"guild-transfer",
+						[ x + 214, y + 80, 16, 116 ],
+						members.length,
+						7,
+						Math.max( 0, members.length - 7 - offset ),
+						resources.size,
+						full,
+						hover,
+						pressed
+					);
+					paths.push( ...scroll.paths );
+					quads.push( ...scroll.quads );
+					controls.push( ...scroll.controls.map( c => ({ ...c, disabled: members.length <= 7 }) ) );
+					authoredLabeledButton(
+						at( 11 ),
+						x,
+						y,
+						"guild-manager-yes",
+						hudCopy( at( 11 ).text ),
+						!members.some( m => m.id === guildField.member )
+					);
+					authoredLabeledButton( at( 12 ), x, y, "guild-manager-no", hudCopy( at( 12 ).text ) );
+				} else if ( guildAsk?.kind === "level-up" && levelPage && levelRoot ) {
+					// CIFGuildLevelUp::OnCreate 5EF9A0; NPC case 5DAEF0 opens root 49.
+					const x = Math.max( 0, (w - levelRoot.rect[2]) / 2 ),
+						y = Math.max( 0, (h - levelRoot.rect[3]) / 2 );
+					const at = ( id: number ) => Object.values( levelPage ).find( n => n.id === id )!;
+					const guild = game?.social?.guild, name = guild?.name ?? "", level = guildAsk.value;
+					const price = guildLevelUpPrice( level );
+					const say = ( key: string, ...args: string[] ) =>
+						noticeText( hudCopy, { key, value: 0, arguments: args } );
+					controls = [];
+					blocks = [ full ];
+					authoredChrome(
+						{ ...levelRoot, type: "CIFFrame", rect: [ 0, 0, levelRoot.rect[2], levelRoot.rect[3] ] },
+						x,
+						y
+					);
+					nativePage( levelPage, x, y, [ 2, 3, 4, 5, 6, 7, 8, 9, 10, 49 ] );
+					const nameWidth = Math.min( 180, text.run( name ).width ), center = levelRoot.rect[2] / 2;
+					image(
+						[ x + center - nameWidth / 2 - 18, y + 43, 16, 16 ],
+						ROOT + "interface/guild/gil_mark01.png"
+					);
+					authoredText( at( 5 ), x, y, name, true );
+					authoredText(
+						{ ...at( 6 ), rect: [ center + nameWidth / 2 + 20, 45, 63, 15 ] },
+						x,
+						y,
+						say( "UIIT_STT_LV_LEVEL", String( level ) ),
+						true
+					);
+					for (
+						const [id, value] of [
+							[ 7, say( "UIIT_MSG_GUILD_LEVEL_UP_CONDITION", String( Math.min( 5, level + 1 ) ) ) ],
+							[
+								8,
+								price ?
+									hudCopy( "UIIT_STT_NEED_GP" ) + " :  " + price.gp + " GP" :
+									hudCopy( "UIIT_MSG_ERROR_GUILD_LEVEL_UP_FULL" )
+							],
+							[
+								9,
+								price ?
+									hudCopy( "UIIT_STT_CIRCULATION_NEEDMONEY" ) + " :  " + price.gold + " " +
+									hudCopy( "UIIT_STT_GOLD" ) :
+									""
+							],
+							[ 10, say( "UIIT_MSG_QUESTION_GUILD_LEVEL_UP", name, String( Math.min( 5, level + 1 ) ) ) ]
+						] as const
+					) {
+						// Preserve authored origins. Inference: allow longer translations
+						// up to the inner frame edge instead of overflowing that frame.
+						const node = at( id );
+						authoredText(
+							{
+								...node,
+								rect: [
+									node.rect[0],
+									node.rect[1],
+									id === 7 ? node.rect[2] : 342 - node.rect[0],
+									node.rect[3]
+								]
+							},
+							x,
+							y,
+							value,
+							true
 						);
 					}
+					authoredLabeledButton( at( 2 ), x, y, "guild-manager-yes", hudCopy( at( 2 ).text ) );
+					authoredLabeledButton( at( 3 ), x, y, "guild-manager-no", hudCopy( at( 3 ).text ) );
 				} else {
-					quads.push( ...text.quads( second, layout.question, full, white, { hAlign: 1 } ) );
-				}
-				button(
-					"guild-manager-yes",
-					hudCopy( guildAsk ? "UIIT_CTL_YES" : "UIIT_CTL_OK" ),
-					...layout.accept.slice( 0, 3 ) as [number, number, number]
-				);
-				if ( !guildVote ) {
-					button(
-						"guild-manager-no",
-						hudCopy( guildAsk ? "UIIT_CTL_NO" : "UIIT_CTL_CANCEL" ),
-						...layout.refuse.slice( 0, 3 ) as [number, number, number]
+					// The guild manager's boxes (guild-manager-hud.ts) in the job box's frame.
+					const layout = guildProposalLayout( w, h );
+					const say = ( key: string, ...args: string[] ) =>
+						noticeText( hudCopy, { key, value: 0, arguments: args } );
+					const price = guildAsk?.kind === "level-up" ? guildLevelUpPrice( guildAsk.value ) : undefined;
+					const title = guildField?.kind === "create" ?
+						"UIIT_CTL_GUILD_CREATE" :
+						guildField ?
+						"UIIT_STT_MLEAVE_WINDOWS" :
+						guildVote ?
+						"UIIT_STT_MRELEASE_VOTESTATE" :
+						"UIIT_STT_CONFIRM_BOX";
+					const lines: Record<string, readonly [string, string]> = {
+						"level-up": [
+							say( "UIIT_MSG_GUILD_LEVEL_UP_CONDITION", String( (guildAsk?.value ?? 0) + 1 ) ),
+							price ?
+								hudCopy( "UIIT_STT_NEED_GP" ) + " : " + price.gp + "   " +
+								hudCopy( "UIIT_STT_CIRCULATION_NEEDMONEY" ) + " : " + price.gold :
+								hudCopy( "UIIT_MSG_ERROR_GUILD_LEVEL_UP_FULL" )
+						],
+						"dissolve": [
+							hudCopy( "UIIT_MSG_GUILD_BREAK_CONFIRM" ),
+							hudCopy( "UIIT_MSG_GUILD_BREAK_ANOTHER_EXPLAIN" )
+						],
+						"secede": [ hudCopy( "UIIT_MSG_GUILD_SECESSION_CONFIRM" ), "" ],
+						"release": [ hudCopy( "UIIT_MSG_MRELEASE_CONFIRM" ), "" ],
+						"compensation": [
+							say( "UIIT_CTL_GUILDWAR_COMPENSATION_01", String( guildAsk?.value ?? 0 ) ),
+							hudCopy( "UIIT_CTL_GUILDWAR_COMPENSATION_02" )
+						],
+						"master-leave": [ "[" + (guildField?.text ?? "") + "]", hudCopy( "UIIT_MSG_MLEAVE_CONFIRM" ) ],
+						"create": [ "", "" ],
+						"vote": [
+							Math.ceil( (guildVote?.remainingMs ?? 0) / 60000 ) + " " + hudCopy( "PARAM_MINUTE" ),
+							""
+						]
+					};
+					const [first, second] = lines[guildAsk?.kind ?? guildField?.kind ?? "vote"]!;
+					controls = [];
+					blocks = [ full ];
+					paths.push( ...partyProposalAssets() );
+					quads.push(
+						...normalTile( layout.background, MESSAGE_TILE, resources.size( MESSAGE_TILE ), full ),
+						...frameRing(
+							layout.frame,
+							MESSAGE_FRAME,
+							PARTS.map( p => resources.size( MESSAGE_FRAME + p + ".png" ) ),
+							full
+						),
+						...text.quads( hudCopy( title ), layout.title, full, white, { hAlign: 1, vAlign: 0 } ),
+						...text.quads( first, layout.name, full, white, { hAlign: 1, vAlign: 0 } )
 					);
+					if ( guildField?.kind === "create" ) {
+						const field: UiRect = [ layout.question[0], layout.question[1], layout.question[2], 16 ];
+						controls.push( {
+							id: "guild-manager-text",
+							label: hudCopy( title ),
+							kind: "text",
+							value: guildField.text,
+							rect: field,
+							maxLength: 12
+						} );
+						rect( field, [ 0, 0, 0, .6 ], "", [ 0, 0, 1, 1 ], full );
+						quads.push(
+							...text.quads( guildField.text, field, field, white, {
+								hAlign: 1,
+								vAlign: 1,
+								overflow: "clip"
+							} )
+						);
+						if ( focus === "guild-manager-text" && caretVisible ) {
+							const width = text.run( guildField.text ).width;
+							rect(
+								[ field[0] + (field[2] + width) / 2, field[1] + 1, 2, 14 ],
+								white,
+								"",
+								[ 0, 0, 1, 1 ],
+								field
+							);
+						}
+					} else {
+						// Inference: wrap manager explanations inside their message frame.
+						// The generic proposal's single text line let long English strings
+						// escape both sides of the dialog and cover the NPC menu behind it.
+						const body: UiRect = [ layout.frame[0] + 12, layout.question[1], layout.frame[2] - 24, 28 ];
+						textLines( second, body[2], value => text.run( value ).width ).slice( 0, 2 ).forEach(
+							( line, index ) =>
+								quads.push(
+									...text.quads( line, [ body[0], body[1] + index * 14, body[2], 14 ], body, white, {
+										hAlign: 1,
+										vAlign: 0
+									} )
+								)
+						);
+					}
+					button(
+						"guild-manager-yes",
+						hudCopy( guildAsk ? "UIIT_CTL_YES" : "UIIT_CTL_OK" ),
+						...layout.accept.slice( 0, 3 ) as [number, number, number]
+					);
+					if ( !guildVote ) {
+						button(
+							"guild-manager-no",
+							hudCopy( guildAsk ? "UIIT_CTL_NO" : "UIIT_CTL_CANCEL" ),
+							...layout.refuse.slice( 0, 3 ) as [number, number, number]
+						);
+					}
 				}
 			}
 			if ( panel !== "Shop" ) repairHud.reset();
@@ -18924,28 +19821,45 @@ export function createUi(
 					76
 				);
 			}
-			const stallBox = stallHud.prompt(), stallPage = hud.data()?.windows.ifstall;
-			if ( worldVisible && stallBox && game?.stall && stallPage ) {
+			const stallBox = stallHud.prompt(), stallPages = hud.data();
+			if (
+				worldVisible && game?.stall &&
+				(stallBox?.kind === "buy" || stallBox?.kind === "network-buy" || stallBox?.kind === "register")
+			) {
+				const stall = game.stall,
+					offer = stallBox.kind === "buy" ?
+						stall.offers.find( row => row.slot === stallBox.slot ) :
+						stallBox.kind === "network-buy" ?
+						stall.network.rows[stallBox.row] :
+						undefined;
+				controls = [];
+				blocks = [ full ];
+				// 5A2795 / 5ADA0F use 6888C0's text-sized MsgBoxSimple. The personal
+				// purchase question uses that same native construction by inference.
+				simpleMessageBox( {
+					title: hudCopy( "UIIT_STT_CONFIRM_BOX" ),
+					lines: stallBox.kind === "register" ?
+						[ "01", "02", "03" ].map( key => hudCopy( "UIIT_MSG_WARENETWORK_REGIST_" + key ) ) :
+						[
+							hudCopy( "UIIT_MSG_WARENETWORK_BUY_CONFIRM" ).replace( "%s", offer?.item.name ?? "" )
+								.replace(
+									"%d",
+									String( offer?.quantity ?? 0 )
+								),
+							String( offer?.price ?? "" )
+						],
+					yes: "stall-prompt-ok",
+					no: "stall-prompt-cancel",
+					yesDisabled: stallBox.kind === "network-buy" && stall.network.buying !== null
+				} );
+			} else if (
+				worldVisible && game?.stall && stallPages &&
+				(stallBox?.kind === "title" || stallBox?.kind === "greeting" || stallBox?.kind === "price")
+			) {
 				// CIFStall's message boxes (5A1DF0, 5A1A40): one modal box at a time.
 				const [boxWidth, boxHeight] = STALL_PROMPT_SIZE[stallBox.kind],
 					layout = messageBox( w, h, boxWidth, boxHeight ),
-					[x, y] = layout.frame,
-					template = Object.values( stallPage ).find( n => n.id === 11 )!,
-					line = ( value: string, dy: number ) => {
-						quads.push(
-							...text.quads( value, [ x + 20, y + dy, boxWidth - 40, 14 ], full, white, {
-								hAlign: 1,
-								vAlign: 0
-							} )
-						);
-					},
-					edit = ( id: string, value: string, r: UiRect, maxLength: number ) => {
-						image(
-							[ r[0] - 4, r[1] - 3, r[2] + 8, r[3] + 6 ],
-							ROOT + "interface/messagebox/msgbox_quantity.png"
-						);
-						partyEdit( { ...template, name: id, rect: r }, 0, 0, id, value, maxLength );
-					};
+					[x, y] = layout.frame;
 				controls = [];
 				blocks = [ full ];
 				paths.push( ...partyProposalAssets() );
@@ -18969,60 +19883,80 @@ export function createUi(
 				);
 				const stall = game.stall;
 				if ( stallBox.kind === "title" || stallBox.kind === "greeting" ) {
-					line( hudCopy( stallBox.kind === "title" ? "UIIT_STT_INSERT_STALL_NAME" : "UIIT_STT_STALL" ), 48 );
-					edit( STALL_PROMPT_TEXT, stallBox.text, [ x + 28, y + 76, boxWidth - 56, 14 ], STALL_TEXT_LIMIT );
+					// 52C870 submodes 0/1 resize MsgBoxInsertMsg for the two fields.
+					const title = stallBox.kind === "title",
+						rects: Readonly<Record<number, UiRect>> = title ?
+							{
+								10: [ 27, 47, 225, 14 ],
+								11: [ 11, 68, 257, 25 ],
+								12: [ 15, 72, 249, 17 ],
+								15: [ 18, 70, 243, 20 ],
+								205: [ 55, 104, 76, 24 ],
+								206: [ 143, 104, 76, 24 ]
+							} :
+							{
+								10: [ 0, 48, 420, 12 ],
+								11: [ 9, 66, 400, 28 ],
+								12: [ 13, 70, 392, 20 ],
+								15: [ 16, 68, 386, 20 ],
+								205: [ 128, 104, 76, 24 ],
+								206: [ 216, 104, 76, 24 ]
+							},
+						page = Object.fromEntries(
+							Object.entries( stallPages.stallTextPage ).map( (
+								[name, node]
+							) => [ name, { ...node, rect: rects[node.id] ?? node.rect } ] )
+						),
+						at = ( id: number ) => Object.values( page ).find( node => node.id === id )!;
+					nativePage( page, x, y, [ 10, 15, 205, 206 ] );
+					authoredText(
+						at( 10 ),
+						x,
+						y,
+						hudCopy( title ? "UIIT_STT_INSERT_STALL_NAME" : "UIIT_STT_INSERT_OWNER_MESSAGE" )
+					);
+					partyEdit(
+						at( 15 ),
+						x,
+						y,
+						STALL_PROMPT_TEXT,
+						stallBox.text,
+						title ? STALL_TITLE_LIMIT : STALL_TEXT_LIMIT,
+						true
+					);
+					authoredLabeledButton( at( 205 ), x, y, "stall-prompt-ok", hudCopy( "UIIT_CTL_CONFIRM" ) );
+					authoredLabeledButton( at( 206 ), x, y, "stall-prompt-cancel", hudCopy( "UIIT_CTL_CANCEL" ) );
 				} else if ( stallBox.kind === "price" ) {
-					const item = game.inventory.find( row => row.slot === stallBox.bagSlot );
-					line( item?.name ?? "", 46 );
+					// 5A1A40 creates kind 3 (528670), the authored MsgBoxStoreMoney.
+					const page = stallPages.stallPricePage,
+						at = ( id: number ) => Object.values( page ).find( node => node.id === id )!,
+						item = stallBox.modify ?
+							stall.offers.find( row => row.slot === stallBox.slot )?.item :
+							game.inventory.find( row => row.slot === stallBox.bagSlot ),
+						icon = iconPath( item?.icon );
+					nativePage( page, x, y, [ 1, 2, 3, 7, 8, 9, 11, 12, 215, 216 ] );
+					// 528920 mode 10 shows NAME1 and the price edit, hiding NAME2/static price.
+					authoredImage( at( 1 ), x, y );
+					// Inferred modal-boundary repair: 5381D0 does not clip plain CIFStatic
+					// text to its field. Keep NAME1's native alignment and complete name.
+					const name = at( 1 );
 					quads.push(
-						...text.quads(
-							hudCopy( "UIIT_CTL_WARENETWORK_RESULT_FIGURE" ),
-							[ x + 30, y + 72, 80, 14 ],
-							full,
-							white
-						),
-						...text.quads(
-							hudCopy( "UIIT_CTL_WARENETWORK_RESULT_PRICE" ),
-							[ x + 30, y + 96, 80, 14 ],
-							full,
-							white
-						)
+						...text.quads( item?.name ?? "", authoredClientRect( name, x, y ), layout.frame, name.color, {
+							fontIndex: name.fontIndex,
+							hAlign: name.hAlign,
+							vAlign: name.vAlign
+						} )
 					);
-					edit( STALL_PROMPT_QUANTITY, stallBox.quantity, [ x + 120, y + 72, 60, 14 ], 5 );
-					edit( STALL_PROMPT_PRICE, stallBox.price, [ x + 120, y + 96, 150, 14 ], 10 );
-				} else if ( stallBox.kind === "buy" || stallBox.kind === "network-buy" ) {
-					const offer = stallBox.kind === "buy" ?
-						stall.offers.find( row => row.slot === stallBox.slot ) :
-						stall.network.rows[stallBox.row];
-					line(
-						hudCopy( "UIIT_MSG_WARENETWORK_BUY_CONFIRM" ).replace( "%s", offer?.item.name ?? "" ).replace(
-							"%d",
-							String( offer?.quantity ?? 0 )
-						),
-						56
-					);
-					line( String( offer?.price ?? "" ), 76 );
-				} else {
-					for ( const [i, key] of [ "01", "02", "03" ].entries() ) {
-						line( hudCopy( "UIIT_MSG_WARENETWORK_REGIST_" + key ), 50 + i * 18 );
-					}
+					// Native child order puts both price labels above NAME1's opaque background.
+					authoredChrome( at( 7 ), x, y );
+					authoredChrome( at( 8 ), x, y );
+					authoredImage( at( 3 ), x, y );
+					if ( icon ) image( authoredRect( at( 12 ), x, y ), icon );
+					partyEdit( at( 3 ), x, y, STALL_PROMPT_QUANTITY, stallBox.quantity, 5, true );
+					partyEdit( at( 11 ), x, y, STALL_PROMPT_PRICE, stallBox.price, 10, true );
+					authoredLabeledButton( at( 215 ), x, y, "stall-prompt-ok", hudCopy( "UIIT_CTL_CONFIRM" ) );
+					authoredLabeledButton( at( 216 ), x, y, "stall-prompt-cancel", hudCopy( "UIIT_CTL_CANCEL" ) );
 				}
-				const pending = stallBox.kind === "network-buy" && stall.network.buying !== null;
-				button(
-					"stall-prompt-ok",
-					hudCopy( "UIIT_CTL_CONFIRM" ),
-					x + boxWidth / 2 - 80,
-					y + boxHeight - 40,
-					76,
-					pending
-				);
-				button(
-					"stall-prompt-cancel",
-					hudCopy( "UIIT_CTL_CANCEL" ),
-					x + boxWidth / 2 + 4,
-					y + boxHeight - 40,
-					76
-				);
 			}
 			if (
 				worldVisible && carriedItem &&
@@ -19095,8 +20029,16 @@ export function createUi(
 				}
 				if ( resources.has( art ) ) rect( layout.art, white, art );
 				const low = game?.progression?.level !== undefined && game.progression.level <= 10;
+				// 52FF33: a team death (mode 2, the 0x37CE notice) revives where it
+				// fell, so the first button reads "standing"; the server's
+				// rebirth (50FEE0) revives it there whatever the choice.
+				const team = game?.rebirthMode === TEAM_DEATH_MODE;
 				for (
-					const [id, key, r] of [ [ "rebirth-point", "UIIT_MSG_MSGBOX_REBIRTH_POINT_BUTTON", layout.point ], [
+					const [id, key, r] of [ [
+						"rebirth-point",
+						team ? "UIIT_MSG_MSGBOX_REBIRTH_STANDING_BUTTON" : "UIIT_MSG_MSGBOX_REBIRTH_POINT_BUTTON",
+						layout.point
+					], [
 						"rebirth-alternate",
 						low ? "UIIT_MSG_MSGBOX_REBIRTH_STANDING_BUTTON" : "UIIT_MSG_MSGBOX_REBIRTH_HELP_BUTTON",
 						layout.alternate
@@ -20814,11 +21756,13 @@ export function createUi(
 			probe?.detailBegin( "ui-finalize" );
 			const semantics = {
 				loadingVisible: !!loading && !assetFailure,
-				// The diagnostic chip gets a separate row below the compact Map
-				// button, whether the minimap is expanded or collapsed.
+				// The DOM tools keep their own row beside the map, below combat chrome.
 				hudCorner: compact ?
 					[ w, itemMall.read().visible ? 52 : compactTelemetryTop, 0, 0 ] as UiRect :
 					hudCorner,
+				// A fixed row below the companion icons' reach: following the icons
+				// moved the tools whenever a pet or mount came or went.
+				hudToolsTop: compact ? undefined : Math.max( cosStatusRowBottom() + HUD_TOOLS_GAP, targetBottom ),
 				focusRequest: worldVisible && phase === "world" ? focusRequest : undefined,
 				loadingProgress: loading?.progress,
 				loadingStatus: loading?.status,
@@ -20851,7 +21795,13 @@ export function createUi(
 				controls
 			};
 			// A completion here must rebuild texture-dependent quads on the next step.
-			paths.push( ...missionLoadingAssets() );
+			if ( phase !== "world" ) leaveRequested = false;
+			paths.push( ...loadingArtDemand( {
+				inWorld: phase === "world",
+				dead: !!game?.vitals.find( v => v.gid === game.localGid )?.deathState,
+				leaving: leaveRequested,
+				nextVariant: nextLoadingVariant
+			} ) );
 			// Prewarm decoded authored artwork so hotkeys/sidebar changes stay immediate.
 			// Renderer now derives GPU residency from committed quads; this catalogue
 			// must never again be interpreted as the set of GPU-resident textures.

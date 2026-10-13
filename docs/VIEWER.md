@@ -18,6 +18,12 @@ P6 `look` object: `bodyRefObjId`, `worn[]` of `{slot, refItemId, plus}`,
 - `&still=1` draws one picture and stops. `&size=` sets the square still in
   pixels: 64..1024, default 384. A still fits the whole model (92% of its
   longer axis).
+- `&batch=1` (a monster still only, for the catalogue's portraits) keeps the
+  page after its still, or after its failure. `window.__viewerNext(refObjId)`
+  then draws the next monster in its place and returns that monster's still
+  promise, so the renderer and shared assets load once for a whole batch. Each
+  monster gets a new entity gid, since the character owner keeps per-gid state.
+  A batch page that fails to render or answers nothing is reloaded by its caller.
 - Without `still`, the view is interactive. The picture takes the iframe's own box
   at device pixels (longer side at most 1024) and fills 88% of its height,
   centred. A long weapon may leave the sides. Drag turns the model, and the wheel
@@ -28,9 +34,21 @@ P6 `look` object: `bodyRefObjId`, `worn[]` of `{slot, refItemId, plus}`,
   none). Otherwise Chrome paints an opaque backdrop behind a frame whose scheme
   differs from its parent's.
 - Camera: a fixed three-quarter front view (35 degrees off the model's front,
-  a 12-degree downward pitch). It is framed to the clip pose's box, then refit
-  once to the first drawn picture's opaque pixels. The model stands in its idle
-  pose (a dressed look holds its weapon's armed idle).
+  a 12-degree downward pitch). It is framed to the clip pose's box, then fitted
+  to the drawn pictures' opaque pixels (`nextFraming`, viewer-camera.ts): a
+  picture that reaches the border is drawn again from farther away, and one off
+  the fill is refit and measured again, until it is framed (a few passes at most;
+  a ride or a wing far off the target's depth needs more than one). The model
+  stands in its idle pose (a dressed look holds its weapon's armed idle).
+- Light: the game's noon light (`VIEWER_LIGHT`, viewer.ts): the shipped
+  environment's midday diffuse (0.285) and ambient (0.78), as the inventory
+  doll is lit at noon, with the key turned to come from in front of the model
+  and above (the viewer's only liberty). Without it the page, which draws no
+  world, would light the model with the empty environment's white ambient. A
+  brighter invented key once turned pale armour white through the equipment
+  reflection stage. The renderer applies it only for the viewer page
+  (`setViewerLight`); the game's inventory and party portraits keep the native
+  light.
 - When the model is drawn, the page posts `{ type: "viewer-ready" }` to its
   parent or opener. A still also posts `{ type: "viewer-still", png }` (a PNG
   data URL). `window.__viewerStill` resolves with the PNG of the first picture,

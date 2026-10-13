@@ -16,7 +16,9 @@ test("native reference joins preserve aliases, material variants and missing mod
 			base: { kind: "monster", refObjId: 1, bsr: "wolf", materialKind: 0 },
 			alias: { kind: "monster", refObjId: 3, bsr: "wolf", materialKind: 0 },
 			unbuilt: { kind: "monster", refObjId: 4, bsr: "missing" },
-			merchant: { kind: "npc", refObjId: 5, bsr: "wolf" }
+			merchant: { kind: "npc", refObjId: 5, bsr: "wolf" },
+			unique: { kind: "monster", refObjId: 6, bsr: "wolf", monsterType: 3 },
+			quest: { kind: "monster", refObjId: 7, bsr: "wolf", typeId4: 4 }
 		},
 		resources: {
 			wolf: { glb: "/assets/npc/wolf.glb", materialVariants: { "3": "/assets/npc/wolf.material-3.glb" } }
@@ -26,6 +28,8 @@ test("native reference joins preserve aliases, material variants and missing mod
 		{ refObjId: 1, glb: "/assets/npc/wolf.glb" },
 		{ refObjId: 2, glb: "/assets/npc/wolf.material-3.glb" },
 		{ refObjId: 3, glb: "/assets/npc/wolf.glb" },
-		{ refObjId: 4, glb: undefined }
+		{ refObjId: 4, glb: undefined },
+		{ refObjId: 6, glb: "/assets/npc/wolf.glb" },
+		{ refObjId: 7, glb: "/assets/npc/wolf.glb" }
 	] );
 });

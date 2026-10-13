@@ -82,7 +82,7 @@ export function sameUiQuad( x: UiQuad, y: UiQuad ): boolean {
 	if (
 		x.doll !== y.doll &&
 		(!x.doll || !y.doll || x.doll.gid !== y.doll.gid || !Object.is( x.doll.yaw, y.doll.yaw ) ||
-			!sameDollCamera( x.doll.camera, y.doll.camera ))
+			!sameDollCamera( x.doll.camera, y.doll.camera ) || x.doll.mount !== y.doll.mount)
 	) return false;
 	if (
 		x.worldAnchor !== y.worldAnchor &&
@@ -103,7 +103,8 @@ export function sameUiSemantics( a: UiSemantics, b: UiSemantics ): boolean {
 		a.title !== b.title || a.message !== b.message || a.loading !== b.loading ||
 		a.loadingVisible !== b.loadingVisible || a.loadingStatus !== b.loadingStatus ||
 		a.loadingProgress !== b.loadingProgress || a.loadingError !== b.loadingError ||
-		!tuple( a.hudCorner, b.hudCorner ) || a.controls.length !== b.controls.length
+		!tuple( a.hudCorner, b.hudCorner ) || a.hudToolsTop !== b.hudToolsTop ||
+		a.controls.length !== b.controls.length
 	) return false;
 	if (
 		a.focusRequest !== b.focusRequest &&
@@ -112,6 +113,7 @@ export function sameUiSemantics( a: UiSemantics, b: UiSemantics ): boolean {
 	) return false;
 	for ( let i = 0; i < a.controls.length; i++ ) {
 		const x = a.controls[i]!, y = b.controls[i]!;
+		if ( x.multiline !== y.multiline ) return false;
 		if (
 			x.id !== y.id || x.label !== y.label || x.kind !== y.kind || x.value !== y.value ||
 			x.disabled !== y.disabled || x.selected !== y.selected || x.captureKeys !== y.captureKeys ||
