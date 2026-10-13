@@ -121,10 +121,15 @@ export function guideTokens( source: string ): readonly GuideToken[] {
 ================
 fitPmlText
 
-782AC0 fits a CTextBoard to the remaining line width. On overflow it rolls
-back to the last admitted ASCII space, including that space in the old
-line. Without one it returns the fitted prefix. The first glyph is always
-admitted, even when wider than the remaining width (782B51..782B61).
+782AC0 fits a CTextBoard to the remaining line width. The first glyph is
+always admitted, even when wider than the remaining width (782B51..782B61).
+
+Port-only, not native (owner-approved 2026-10-13): on overflow this rolls
+back to the last admitted ASCII space, keeping that space on the old line,
+and keeps the fitted prefix only when there is none. Native v1.150 wraps per
+character: CEnvironmentConfig's constructor (4BCA61) sets
+g_GlobalEnvironmentConfig+0x12C = 1, which 83E9BF passes to 782AC0, and that
+skips the rollback (782B82, 782BDC).
 ================
 */
 function fitPmlText( glyphs: Record<string, Glyph>, chars: readonly string[], start: number, available: number ) {
@@ -151,7 +156,7 @@ guideContent
 
 83E8F0 lays out each PML text resource through the fitted CTextBoard and
 continues its returned suffix on the next line. Keep run boundaries and
-spaces: fitting words independently changes the native wrap points.
+spaces: fitPmlText applies the owner-approved word-wrap deviation.
 ================
 */
 export function guideContent(

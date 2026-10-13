@@ -1,11 +1,11 @@
 /*
 ===========================================================================
 
-pml-layout.test.mjs - native text-resource fitting and published PML geometry
+pml-layout.test.mjs - PML text-resource fitting and published PML geometry
 
-Exercise the production layout and font owner. Expected line boundaries come
-from the instruction-checked 782AC0 fit/rollback path, not browser shaping.
-Native screenshots are still required for a complete pixel comparison.
+Exercise the production layout and font owner. Expected line boundaries pin
+the owner-approved word-wrap deviation (2026-10-13); native v1.150 wraps per
+character. Native screenshots are still required for a complete pixel comparison.
 
 ===========================================================================
 */
