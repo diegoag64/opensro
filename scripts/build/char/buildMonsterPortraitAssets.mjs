@@ -21,6 +21,7 @@ import { pathToFileURL } from "node:url";
 import { launchProbeBrowser } from "../../lib/probeBrowser.mjs";
 import { publicRoot } from "../world/paths.mjs";
 import { npcManifestModels } from "../shared/npcManifest.mjs";
+import { containedPublicFile } from "../shared/assetPaths.mjs";
 import { writeIntoPublicTree } from "../shared/publicWrite.mjs";
 import { claimPublicFile } from "../shared/publicationLedger.mjs";
 import { writeJsonIfChanged } from "../shared/jsonOut.mjs";
@@ -33,6 +34,7 @@ const CLIENT = path.resolve( import.meta.dirname, "../../../apps/client-next" );
 export const MONSTER_PORTRAIT_SIZE = 384;
 const STILL_TIMEOUT_MS = 45000;
 const PNG_DATA_URL = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/;
+const EFFECT_PROGRAMS = "/assets/effects/programs.json";
 const VIEWER_MANIFESTS = [
 	"assets/char/roster.json",
 	"assets/npc/manifest.json",
@@ -63,13 +65,26 @@ export function monsterPortraitReferences( manifest ) {
 
 /*
 ================
-rendererFingerprint
+readPortraitAsset
+
+Resolve published dependencies through the shared containment boundary.
+================
+*/
+async function readPortraitAsset( publicPath ) {
+	return readFile( containedPublicFile( publicRoot, publicPath ) );
+}
+
+/*
+================
+monsterPortraitRendererFingerprint
 
 The viewer's owners and presentation inputs invalidate cached stills. Include
 the NPC resources too: a riding unique's still depends on its mount's bytes.
+Ambient effects are drawn by the viewer; both their programs and referenced
+texture bytes must invalidate a still, even when no model changed.
 ================
 */
-async function rendererFingerprint( manifest ) {
+export async function monsterPortraitRendererFingerprint( manifest, readAsset = readPortraitAsset ) {
 	const hash = createHash( "sha256" );
 	/*
 	================
@@ -91,14 +106,20 @@ async function rendererFingerprint( manifest ) {
 	for ( const file of [ "src/bootstrap.ts", "viewer.html" ] ) {
 		hash.update( await readFile( path.join( CLIENT, file ) ) );
 	}
-	for ( const file of VIEWER_MANIFESTS ) hash.update( await readFile( path.join( publicRoot, file ) ) );
+	for ( const file of VIEWER_MANIFESTS ) hash.update( await readAsset( "/" + file ) );
+	const effectBytes = await readAsset( EFFECT_PROGRAMS );
+	hash.update( EFFECT_PROGRAMS ).update( effectBytes );
+	const effects = JSON.parse( effectBytes.toString( "utf8" ) );
+	for ( const texture of [ ...new Set( Object.values( effects.textures ?? {} ) ) ].sort() ) {
+		hash.update( texture ).update( await readAsset( texture ) );
+	}
 	const models = new Set();
 	for ( const row of Object.values( npcManifestModels( manifest ) ) ) {
 		if ( row.glb ) models.add( row.glb );
 		for ( const glb of Object.values( row.materialVariants ?? {} ) ) models.add( glb );
 	}
 	for ( const glb of [ ...models ].sort() ) {
-		hash.update( glb ).update( await readFile( path.join( publicRoot, glb.slice( 1 ) ) ) );
+		hash.update( glb ).update( await readAsset( glb ) );
 	}
 	hash.update( await readFile( import.meta.filename ) );
 	return hash.digest( "hex" );
@@ -157,7 +178,7 @@ buildMonsterPortraitAssets
 export async function buildMonsterPortraitAssets() {
 	const manifestData = JSON.parse( await readFile( path.join( publicRoot, "assets/npc/manifest.json" ), "utf8" ) );
 	const references = monsterPortraitReferences( manifestData );
-	const fingerprint = await rendererFingerprint( manifestData ), rows = [], missing = [], files = [];
+	const fingerprint = await monsterPortraitRendererFingerprint( manifestData ), rows = [], missing = [], files = [];
 	const require = createRequire( path.join( CLIENT, "package.json" ) );
 	const { createServer } = await import( pathToFileURL( require.resolve( "vite" ) ).href );
 	const server = await createServer( {
