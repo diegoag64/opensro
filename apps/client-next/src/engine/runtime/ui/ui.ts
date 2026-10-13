@@ -1248,6 +1248,11 @@ export function createUi(
 	// The UI resolves the same icons on every layout; its resolver remembers them.
 	const iconPath = createIconPaths();
 	let controls: UiControl[] = [], blocks: UiRect[] = [], paths: string[] = [];
+	// The frame's item images (nativeItem): demanded like any path, but a
+	// window does not wait on them. A storage that waited on a deposited
+	// item's icon kept replaying its earlier contents, and the item stayed
+	// invisible ("I put items yet I can't see them").
+	let contentImages = new Set<string>();
 	const white = [ 1, 1, 1, 1 ] as const, gold = [ .94, .85, .63, 1 ] as const;
 	// CGWndListHost::LayoutScrollbar 6F3620: content insets also govern the scrollbar.
 	/*
@@ -1512,6 +1517,14 @@ export function createUi(
 				if ( questDetails && (owner === "quest-details" || owner === "quest-abandon") ) continue;
 				admittedWindows.delete( owner );
 			}
+		} else if ( !(isMainPopupPage( panel ) && isMainPopupPage( next )) ) {
+			// The primary window's replay (endWindow) bridges a main popup page
+			// to the next page of the same frame while its art loads. Any other
+			// switch leaves that window: replaying it under the new panel showed
+			// it beside what now draws in its place (the Chat window's input
+			// beside the chat bar, a duplicate "chat-text", when an exchange
+			// opened the inventory before its icons had loaded).
+			admittedWindows.delete( "primary" );
 		}
 		const wasOpen = !!panel;
 		panel = next;
@@ -7505,6 +7518,7 @@ export function createUi(
 			controls = [];
 			blocks = [];
 			paths = [ ...commonWindowPaths ];
+			contentImages = new Set();
 			const fontPath = text.path();
 			if ( fontPath ) paths.push( fontPath );
 			const w = next.width, h = next.height, full: UiRect = [ 0, 0, w, h ];
@@ -7643,12 +7657,13 @@ export function createUi(
 			*/
 			function endWindow( mark: readonly [number, number, number, number], owner = "primary" ) {
 				const admittedWindow = admittedWindows.get( owner );
-				windowMissing.push( ...paths.slice( mark[3] ).filter( path => !resources.has( path ) ) );
+				// Everything still loading is reported (tests wait on it before a raster);
+				// only the window's own art holds its admission.
+				const unloaded = paths.slice( mark[3] ).filter( path => !resources.has( path ) );
+				windowMissing.push( ...unloaded );
+				const gaps = unloaded.filter( path => !contentImages.has( path ) );
 				const key = phase + ":" + w + ":" + h;
-				if (
-					!fontPath || !resources.has( fontPath ) ||
-					paths.slice( mark[3] ).some( path => !resources.has( path ) )
-				) {
+				if ( !fontPath || !resources.has( fontPath ) || gaps.length ) {
 					quads.length = mark[0];
 					controls.length = mark[1];
 					blocks.length = mark[2];
@@ -8570,7 +8585,7 @@ export function createUi(
 				disabled = false,
 				selected = false
 			) {
-				const path = iconPath( item?.icon );
+				const path = iconPath( item?.icon ), drawn = paths.length;
 				if ( path ) {
 					image( r, path );
 					if ( item && "typeFlags" in item ) {
@@ -8579,6 +8594,7 @@ export function createUi(
 						itemEffects( id, owned, r );
 					}
 				}
+				for ( const content of paths.slice( drawn ) ) contentImages.add( content );
 				controls.push( {
 					id,
 					label: item?.name ?? "",

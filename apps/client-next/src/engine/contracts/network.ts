@@ -21,6 +21,13 @@ export const NET_JOURNAL_IN = 0;
 export const NET_JOURNAL_OUT = 1;
 // A gap: frames the journal dropped (bytes = how many), timed at the last.
 export const NET_JOURNAL_GAP = 2;
+// A fatal incident carries the frames before it (NetworkOwner.recentJournal):
+// no failure that ends a session should arrive without its evidence. The
+// Agent bounds the same rows (client_incident.go maxIncidentJournalRows).
+export const INCIDENT_JOURNAL_ROWS = 200;
+// Older rows are not evidence of this failure (maxIncidentJournalAge); the
+// Agent refuses a report that carries one, so they are left out here.
+export const INCIDENT_JOURNAL_AGE_MS = 600000; // ten minutes
 /*
 ================
 NetworkOwner
@@ -37,6 +44,9 @@ export interface NetworkOwner {
 	// Frames journaled since the last take (epoch ms, direction, opcode,
 	// bytes per frame), or null; the bug report's network.json.
 	takeJournal(): Float64Array | null;
+	// The last INCIDENT_JOURNAL_ROWS frames whatever takeJournal drained, as
+	// flattened rows: ms before now (<= 0, whole), direction, opcode, bytes.
+	recentJournal(): number[];
 	dispose(): void;
 }
 /*
@@ -63,6 +73,8 @@ export interface ClientIncident {
 	readonly character?: string;
 	readonly region?: number;
 	readonly build?: string;
+	// The frames before the failure (NetworkOwner.recentJournal), never payloads.
+	readonly journal?: readonly number[];
 }
 
 /*
@@ -84,3 +96,11 @@ export const INCIDENT_MESSAGE_LENGTH = 500;
 // A missing movement receipt invalidates prediction; the session must resume
 // through fresh server state without replaying the unacknowledged command.
 export const MOVEMENT_RECEIPT_TIMEOUT = "movement_receipt_timeout";
+// An unanswered inventory transaction is the same loss on the item lane: the
+// transport keeps no frame already written to a dying socket (server
+// transport doc.go), so the request or its answer is gone. Native replies
+// carry no transaction ID; the session resumes through fresh server state.
+export const INVENTORY_TRANSACTION_TIMEOUT = "inventory_transaction_timeout";
+// The target lane's release (B4B3) carries no identity either: an unanswered
+// one is the same loss, resumed the same way.
+export const TARGET_RELEASE_TIMEOUT = "target_release_timeout";

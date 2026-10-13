@@ -16,7 +16,9 @@ import { createDeparture } from "./departure";
 import type { GameplayCommand } from "@/engine/contracts/gameplay";
 import {
 	type ClientIncident,
+	INVENTORY_TRANSACTION_TIMEOUT,
 	MOVEMENT_RECEIPT_TIMEOUT,
+	TARGET_RELEASE_TIMEOUT,
 	type NetworkFailure,
 	INCIDENT_DUMP_BYTES,
 	INCIDENT_MESSAGE_LENGTH,
@@ -31,6 +33,20 @@ const MAX_RECONNECT_DELAY_MS = 4000;
 // waking or a Wi-Fi hand-over outlasts a few fast attempts.
 const RESUME_GRACE_MS = 30000;
 const MAX_CHARACTER_NAME_LENGTH = 64;
+
+/*
+================
+lostAnswer
+
+The timeouts that mean an answer was lost across the transport (doc.go
+keeps no frame written to a dying socket), not a game error: each resumes
+the session, whose bootstrap retires the request without replaying it.
+================
+*/
+function lostAnswer( cause: unknown ): boolean {
+	return cause === MOVEMENT_RECEIPT_TIMEOUT || cause === INVENTORY_TRANSACTION_TIMEOUT ||
+		cause === TARGET_RELEASE_TIMEOUT;
+}
 
 /*
 ================
@@ -91,7 +107,8 @@ onNetworkFailure
 				} :
 				{}),
 			phase,
-			character
+			character,
+			journal: network.recentJournal()
 		} );
 	}
 	const network = createNetwork( onNetworkFailure );
@@ -527,12 +544,19 @@ step
 					departure.step( now );
 					core.step( now );
 				} catch ( error ) {
-					const receiptTimeout = error instanceof Error && error.cause === MOVEMENT_RECEIPT_TIMEOUT;
+					// A lost answer, not a game error: every such lane resumes through
+					// the bootstrap, which rebuilds the state the request left pending.
+					const cause = error instanceof Error ? error.cause : undefined;
+					const lost = lostAnswer( cause );
 					onNetworkFailure( String( error ), undefined, {
-						category: receiptTimeout ? "unknown" : "software",
-						code: receiptTimeout ? MOVEMENT_RECEIPT_TIMEOUT : "simulation_failed",
-						message: receiptTimeout ?
+						category: lost ? "unknown" : "software",
+						code: lost ? cause as string : "simulation_failed",
+						message: cause === MOVEMENT_RECEIPT_TIMEOUT ?
 							"Movement synchronization timed out. Please reconnect." :
+							cause === TARGET_RELEASE_TIMEOUT ?
+							"Target synchronization timed out. Please reconnect." :
+							lost ?
+							"Item synchronization timed out. Please reconnect." :
 							"A game error interrupted your session.",
 						stack: error instanceof Error ? error.stack?.slice( 0, 8192 ) : undefined
 					} );
@@ -570,7 +594,7 @@ step
 				// Reuse admission/resume to replace stale prediction with server state.
 				if (
 					hasWorld && resume && (attempt === 0 || now - reconnectSince < RESUME_GRACE_MS) &&
-					(failureCode === MOVEMENT_RECEIPT_TIMEOUT || [
+					(lostAnswer( failureCode ) || [
 						"Transport connection closed",
 						"Transport connection failed",
 						"World connection timed out",
