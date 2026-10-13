@@ -212,6 +212,34 @@ test("optional atlas identity stays on the selected transport and cannot break l
 	);
 });
 
+test("removing the shard capability cancels both pending requests and discards projected areas", () => {
+	const cancels = [], requests = [];
+	const bytes = new TextEncoder().encode( JSON.stringify( guide ) );
+	let delivered = false;
+	const hud = createHuntingGuideHud( {
+		available: () => 2,
+		request: url => {
+			requests.push( url );
+			return requests.length;
+		},
+		take: id => delivered && id === 3 ? { kind: "bytes", id, buffer: bytes.buffer } : null,
+		cancel: id => cancels.push( id )
+	}, "https://fixture.invalid" );
+	const source = { url: "https://fixture.invalid/guide.json", bytes: bytes.length };
+	hud.step( source, true );
+	hud.step( undefined, true );
+	assert.deepEqual( cancels, [ 1, 2 ] );
+	assert.equal( requests.length, 2 );
+	delivered = true;
+	hud.step( source, true );
+	assert.ok( hud.present( 0, [ 0, 0, 400, 200 ], [ 0, 0 ], pose ).areas.length );
+	hud.step( undefined, true );
+	assert.equal( hud.present( 0, [ 0, 0, 400, 200 ], [ 0, 0 ], pose ).areas.length, 0 );
+	assert.equal( hud.details( "map-hunting-area:stale", [ 0, 0, 800, 600 ] ), null );
+	assert.deepEqual( cancels, [ 1, 2, 4 ] );
+	hud.dispose();
+});
+
 test("world reference admission retains reverse destinations alongside the hunting identity", async t => {
 	const { createSessionHttp } = await import( "../../src/engine/runtime/simulation/worker/session/http/http.ts" );
 	const { REFERENCES_CONTRACT } = await import( "../../src/engine/foundation/release/protocol.ts" );

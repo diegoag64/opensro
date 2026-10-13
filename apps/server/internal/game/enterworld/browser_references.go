@@ -23,14 +23,18 @@ import (
 	"net/http"
 	"strings"
 
-	"opensro.online/server/internal/game/world/monster"
 	"opensro.online/server/internal/releaseprotocol"
 )
 
-// BrowserReferences is immutable process-owned public data, compiled once from
-// the same authority used by combat. Never put character/session fields here.
-// Content identity, rather than a manually maintained asset list or version,
-// invalidates the browser cache when any source row or projection changes.
+/*
+================
+BrowserReferences
+
+Immutable process-owned public data, compiled once from the same authority
+used by combat. Content identity invalidates the cache when a row changes.
+Never put character/session fields here.
+================
+*/
 type BrowserReferences struct {
 	Path   string `json:"path"`
 	SHA256 string `json:"sha256"`
@@ -52,7 +56,13 @@ const (
 	maxPublicReferenceBytes = 32 << 20
 )
 
-// BrowserReferenceSources are the immutable tables one reference file holds.
+/*
+================
+BrowserReferenceSources
+
+The immutable tables one reference file holds.
+================
+*/
 type BrowserReferenceSources struct {
 	Skills SkillDataSource
 	// ItemCommands may be nil.
@@ -62,8 +72,8 @@ type BrowserReferenceSources struct {
 	// Monsters are the monster rows every viewer needs
 	// (PublicMonsterRefObjRows).
 	Monsters []RefObjRow
-	// Whitelisted locations from the effective immutable population template.
-	HuntingGuide []monster.HuntingGuideEntry
+	// Port-only, not native. Read only when SRO_HUNTING_GUIDE is enabled.
+	HuntingGuide HuntingGuideSource
 	// ReverseMapPoints is the reverse return scroll's map table: empty
 	// unless the port-only SRO_REVERSE_RETURN_MAP option is on.
 	ReverseMapPoints []ReverseMapPoint
@@ -160,22 +170,9 @@ func NewBrowserReferences(sources BrowserReferenceSources) (*BrowserReferences, 
 		return nil, err
 	}
 	result.itemIDs, result.objectIDs = itemIDs, objectIDs
-	if len(sources.HuntingGuide) > 0 {
-		guide, err := json.Marshal(struct {
-			Format  string                      `json:"format"`
-			Version int                         `json:"version"`
-			Rows    []monster.HuntingGuideEntry `json:"rows"`
-		}{"sro-hunting-guide", 1, sources.HuntingGuide})
-		if err != nil {
-			return nil, err
-		}
-		if len(guide) > 2<<20 {
-			return nil, fmt.Errorf("hunting guide exceeds resource budget")
-		}
-		result.HuntingGuide, err = newBrowserReferenceFile(guide)
-		if err != nil {
-			return nil, err
-		}
+	result.HuntingGuide, err = newHuntingGuideReference(sources.HuntingGuide)
+	if err != nil {
+		return nil, err
 	}
 	return result, nil
 }
@@ -257,8 +254,14 @@ func (r *BrowserReferences) ServeHTTP(w http.ResponseWriter, q *http.Request) {
 	}
 }
 
-// The wire envelope carries only the immutable identity. The existing full
-// BootstrapResult remains available for detached fixtures/legacy consumers.
+/*
+================
+referenceEnterWorldBlob
+
+The wire envelope carries only the immutable identity. The full
+BootstrapResult remains available for detached fixtures/legacy consumers.
+================
+*/
 func referenceEnterWorldBlob(result *BootstrapResult, refs *BrowserReferences) ([]byte, error) {
 	copy := *result
 	copy.RefSkillSnapshot = nil

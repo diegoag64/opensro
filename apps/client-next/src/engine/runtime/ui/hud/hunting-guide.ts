@@ -72,6 +72,10 @@ export function createHuntingGuideHud(
 			let changed = false;
 			if ( next?.url !== source?.url || next?.bytes !== source?.bytes ) {
 				if ( load.kind === "loading" ) assets.cancel( load.id );
+				if ( !next && art.kind === "loading" ) {
+					assets.cancel( art.id );
+					art = { kind: "idle" };
+				}
 				source = next;
 				load = { kind: "idle" };
 				invalidate();

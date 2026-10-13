@@ -56,6 +56,7 @@ var Settings = []Setting{
 	{Env: "SRO_PARTY_MASTERIES", NomadVar: "party_masteries", Default: "on", Source: Built},
 	{Env: "SRO_STORAGE_AUTO_STACK", NomadVar: "storage_auto_stack", Default: "on"},
 	{Env: "SRO_REVERSE_RETURN_MAP", NomadVar: "reverse_return_map", Default: ""},
+	{Env: "SRO_HUNTING_GUIDE", NomadVar: "hunting_guide", Default: ""},
 	{Env: "SRO_GM_SETSPEED", NomadVar: "gm_setspeed", Default: "on"},
 	{Env: "SRO_ALCHEMY_RATES", NomadVar: "alchemy_rates", Default: "on", Catalogue: true},
 	{Env: "SRO_ALCHEMY_MAX_PLUS", NomadVar: "alchemy_max_plus", Default: "on", Catalogue: true},

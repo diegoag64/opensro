@@ -146,6 +146,7 @@ export function createWorldMapHud( options: MapHudOptions ) {
 	const huntingGuide = createHuntingGuideHud( options.assets, options.base );
 	let mapSmall = false, mapFollow = true, mapPage = 0, mapX = 100, mapY = 100;
 	let mapPan: [number, number] = [ 0, 0 ], mapCenter: Pose | null = null;
+	let guideAvailable = false;
 	return {
 		/*
 		================
@@ -194,7 +195,7 @@ export function createWorldMapHud( options: MapHudOptions ) {
 		================
 		*/
 		shortcut( id: string ) {
-			if ( mapPage === 0 && id === "map-hunting-toggle" ) {
+			if ( guideAvailable && mapPage === 0 && id === "map-hunting-toggle" ) {
 				const saved = experimental.state().saved;
 				experimental.restore( { ...saved, monsterGuide: !saved.monsterGuide } );
 				options.saveExperimental?.( experimental.state().saved );
@@ -250,7 +251,7 @@ export function createWorldMapHud( options: MapHudOptions ) {
 		================
 		*/
 		surface( id: string ) {
-			return id === "map-pan" || id.startsWith( HUNTING_AREA_PREFIX );
+			return id === "map-pan" || (guideAvailable && id.startsWith( HUNTING_AREA_PREFIX ));
 		},
 		/*
 		================
@@ -274,9 +275,12 @@ export function createWorldMapHud( options: MapHudOptions ) {
 		================
 		*/
 		step( next: UiView, panel: string ) {
+			const source = next.session?.phase === "world" ? next.session.huntingGuide : undefined;
+			guideAvailable = source !== undefined;
+			const page = mapFollow && next.gameplay?.pose ? worldMapPageAt( next.gameplay.pose ) : mapPage;
 			return huntingGuide.step(
-				next.session?.huntingGuide,
-				panel === "Map" && experimental.state().saved.monsterGuide && next.session?.phase === "world"
+				source,
+				panel === "Map" && page === 0 && experimental.state().saved.monsterGuide
 			);
 		},
 		/*
@@ -325,7 +329,7 @@ export function createWorldMapHud( options: MapHudOptions ) {
 			mapX = mapLeft;
 			mapY = mapTop;
 			if ( mapPage !== 0 && hover?.startsWith( HUNTING_AREA_PREFIX ) ) hover = null;
-			const mapGuideEnabled = experimental.state().saved.monsterGuide;
+			const mapGuideEnabled = guideAvailable && experimental.state().saved.monsterGuide;
 			const mapClip: UiRect = [
 				mapLeft + 6,
 				mapTop + 34,
@@ -542,7 +546,7 @@ export function createWorldMapHud( options: MapHudOptions ) {
 				} );
 				quads.push( ...mapImages );
 				controls.push( ...(mapGuide?.controls ?? []), ...mapHits );
-				if ( mapPage === 0 ) {
+				if ( guideAvailable && mapPage === 0 ) {
 					paths.push(
 						ROOT + "interface/ifcommon/com_checkbutton_on.png",
 						ROOT + "interface/ifcommon/com_checkbutton_off.png"
@@ -612,7 +616,8 @@ details
 				rect = input.rect;
 
 			if (
-				worldVisible && panel === "Map" && mapPage === 0 && experimental.state().saved.monsterGuide && !pressed
+				guideAvailable && worldVisible && panel === "Map" && mapPage === 0 &&
+				experimental.state().saved.monsterGuide && !pressed
 			) {
 				const detail = huntingGuide.details( hover, full );
 				if ( detail ) {

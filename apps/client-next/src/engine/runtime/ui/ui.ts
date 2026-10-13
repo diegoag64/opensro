@@ -67,13 +67,7 @@ import { containsPoint, topmostControlAt } from "@/engine/foundation/ui/hit-test
 import { minimapZoomTarget, advanceMinimapZoom } from "@/engine/foundation/ui/minimap-zoom";
 import { minimapTiles } from "@/engine/foundation/ui/minimap-tiles";
 import { minimapFloorQueries, minimapPoseKey, minimapSameFloor } from "@/engine/foundation/ui/minimap-floor";
-import {
-	minimapMarkers,
-	minimapOffset,
-	minimapEdge,
-	minimapHunting,
-	rosterPositions
-} from "@/engine/foundation/ui/minimap-markers";
+import { minimapMarkers, minimapOffset, minimapEdge, minimapHunting } from "@/engine/foundation/ui/minimap-markers";
 import { createMinimapResources } from "./hud/minimap";
 import { createWorldMapHud } from "./hud/world-map";
 import { createSkillTrainingCache } from "./hud/skill-training";
@@ -152,7 +146,7 @@ import { createAutoPotionInput } from "./hud/auto-potion-input";
 import { createCosHud } from "./hud/cos-hud";
 import { createCompactHud, compactHudLayout, compactWindowDrag, compactCloseControl } from "./hud/compact-hud";
 import { fitUiGroup } from "@/engine/foundation/ui/layout";
-import { createExperimentalHud, EXPERIMENTAL_TABS } from "./hud/experimental-hud";
+import { createExperimentalHud, experimentalTabs, EXPERIMENTAL_TABS } from "./hud/experimental-hud";
 import { renderScales, type ExperimentalOptions } from "@/engine/foundation/ui/experimental-options";
 import {
 	rememberedWindows,
@@ -2349,7 +2343,9 @@ export function createUi(
 			partyChatCommand( chatText.slice( chatTabPrefix( chatTab ).length ), hudCopy ) :
 			null;
 		if ( panel === "Experimental" && id.startsWith( "experimental-" ) ) {
-			const row = EXPERIMENTAL_TABS.flatMap( tab => tab.rows ).find( candidate => candidate.id === id );
+			const row = experimentalTabs( view?.session ).flatMap( tab => tab.rows ).find( candidate =>
+				candidate.id === id
+			);
 			if ( id.startsWith( "experimental-tab:" ) ) experimental.selectTab( Number( id.slice( 17 ) ) );
 			else if ( id.startsWith( "experimental-render-scale:" ) ) {
 				experimental.selectRenderScale( Number( id.slice( "experimental-render-scale:".length ) ) );
@@ -10615,7 +10611,7 @@ export function createUi(
 					// Options-style tabs over one framed list: a header naming the tab,
 					// then a checkbox or numeric selection with its help line below it.
 					// The window grows with the selected tab, as CIFOption::OnTab does.
-					const { tab, draft } = experimental.state(), page = EXPERIMENTAL_TABS[tab]!;
+					const { tab, draft } = experimental.state(), page = experimentalTabs( next.session )[tab]!;
 					const rowPitch = 46, listTop = 98, width = 386;
 					const listHeight = page.rows.length * rowPitch + 12, height = listTop + listHeight + 50;
 					const [px, py] = windowOrigin( "Experimental", [
